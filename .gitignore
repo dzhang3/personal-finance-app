@@ -1,0 +1,5 @@
+/backend/myenv
+
+/frontend/mobile/node_modules
+
+*.env
