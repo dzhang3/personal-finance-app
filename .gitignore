@@ -3,3 +3,5 @@
 /frontend/mobile/node_modules
 
 *.env
+backend/server/__pycache__
+backend/db.sqlite3
