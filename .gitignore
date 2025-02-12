@@ -7,3 +7,5 @@ backend/server/__pycache__
 backend/app/__pycache__
 backend/app/migrations
 backend/db.sqlite3
+
+todo.txt

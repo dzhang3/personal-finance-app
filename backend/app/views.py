@@ -41,6 +41,8 @@ from plaid.model.link_token_create_request_cra_options import LinkTokenCreateReq
 from plaid.model.statements_download_request import StatementsDownloadRequest
 from plaid.model.sandbox_public_token_create_request import SandboxPublicTokenCreateRequest
 from plaid.model.institutions_get_request import InstitutionsGetRequest
+from plaid.model.link_token_transactions import LinkTokenTransactions
+from plaid.model.liabilities_get_request import LiabilitiesGetRequest
 
 from plaid.api import plaid_api
 
@@ -51,6 +53,7 @@ PLAID_SECRET = os.getenv('PLAID_SECRET')
 PLAID_ENV = os.getenv('PLAID_ENV', 'sandbox')
 PLAID_PRODUCTS = os.getenv('PLAID_PRODUCTS', 'transactions').split(',')
 PLAID_COUNTRY_CODES = os.getenv('PLAID_COUNTRY_CODES', 'US').split(',')
+
 
 def empty_to_none(field):
     value = os.getenv(field)
@@ -89,7 +92,7 @@ country_codes = list(map(lambda x: CountryCode(x), PLAID_COUNTRY_CODES))
 
 # We store the access_token in memory - in production, store it in a secure
 # persistent data store.
-access_token = None
+access_token = 'access-sandbox-cc744d52-0931-463e-8ead-300630b67a39'
 # The payment_id is only relevant for the UK Payment Initiation product.
 # We store the payment_id in memory - in production, store it in a secure
 # persistent data store.
@@ -112,6 +115,9 @@ def create_link_token(request):
         request = LinkTokenCreateRequest(
             user = LinkTokenCreateRequestUser(
                 client_user_id = str(datetime.now()),
+            ),
+            transactions = LinkTokenTransactions(
+                days_requested = 30,
             ),
             products=products,
             client_name='Finance App',
@@ -142,3 +148,60 @@ def exchange_public_token(request):
         return JsonResponse(exchange_response)
     except plaid.ApiException as e:
         return json.loads(e.body)
+    
+def create_login(access_token, item_id):
+    #TODO: create login object
+    pass
+    
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def need_access_token(request):
+    hasAccessToken = access_token is not None
+    return JsonResponse({
+        'hasAccessToken': hasAccessToken, # access_token is not None
+    })
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_transactions(request):
+    start_date = (date.today() - timedelta(days=30)).strftime('%Y-%m-%d')
+    end_date = date.today().strftime('%Y-%m-%d')
+    try:
+        request = TransactionsSyncRequest(
+            access_token=access_token,
+            options={
+                'days_requested': 1,
+            }
+        )
+        response = client.transactions_sync(request)
+        print(response)
+        return JsonResponse(response.to_dict())
+    except plaid.ApiException as e:
+        return json.loads(e.body)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_item(request):
+    global access_token
+    try:
+        request = ItemGetRequest(
+            access_token=access_token
+        )
+        response = client.item_get(request)
+        print(json.dumps(response, indent=4))
+        return JsonResponse(response.to_dict())
+    except plaid.ApiException as e:
+        return json.loads(e.body)
+    
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_liabilities(request):
+    try:
+        request = LiabilitiesGetRequest(access_token=access_token)
+        response = client.liabilities_get(request)
+        return JsonResponse(response.to_dict())
+    except plaid.ApiException as e:
+        return json.loads(e.body)
+
+
+    
