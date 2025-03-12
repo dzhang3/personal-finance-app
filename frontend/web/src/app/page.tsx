@@ -1,44 +1,61 @@
 "use client";
 
-import Image from "next/image";
-import { getLinkToken, exchangePublicToken } from "@services";
-import { Button } from "@mui/material";
-import { use, useState, useEffect } from "react";
-import { usePlaidLink, PlaidLinkOptions,  } from "react-plaid-link";
-
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { CircularProgress, Box } from '@mui/material';
 
 export default function Home() {
-  const [linkToken, setLinkToken] = useState<string | null>(null);
-
-  const handleClick = () => {
-    getLinkToken().then((linkToken) => {
-      console.log(linkToken);
-      setLinkToken(linkToken);
-    });
-  }
-
-  const onSuccess = (public_token: string, metadata: object) => {
-    console.log(public_token);
-    console.log(metadata);
-    exchangePublicToken(public_token).then((data) => {
-      console.log(data);
-    });
-  }
-
-  const config: PlaidLinkOptions = {
-    token: linkToken!,
-    onSuccess: onSuccess,
-  };
-
-  const { open, ready } = usePlaidLink(config);
+  const router = useRouter();
 
   useEffect(() => {
-    if (ready) {
-      open();
-    }
-  }, [ready, open]);
+    const checkAuth = async () => {
+      try {
+        const response = await fetch('http://localhost:8000/api/auth/check/', {
+          credentials: 'include',
+        });
+
+        if (!response.ok) {
+          // Not authenticated, redirect to login
+          router.push('/login');
+          return;
+        }
+
+        const data = await response.json();
+        if (data.isAuthenticated) {
+          // User is authenticated, check if they have accounts
+          const accountsResponse = await fetch('http://localhost:8000/api/check_has_accounts/', {
+            method: 'POST',
+            credentials: 'include',
+          });
+          const accountsData = await accountsResponse.json();
+
+          if (accountsData.hasAccounts) {
+            router.push('/dashboard'); // Or wherever your main app page is
+          } else {
+            router.push('/link'); // Or wherever your Plaid link page is
+          }
+        } else {
+          router.push('/login');
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+        router.push('/login');
+      }
+    };
+
+    checkAuth();
+  }, [router]);
 
   return (
-    <Button onClick={handleClick}> Finance App </Button>
+    <Box
+      sx={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        minHeight: '100vh',
+      }}
+    >
+      <CircularProgress />
+    </Box>
   );
 }
