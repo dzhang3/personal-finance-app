@@ -8,7 +8,7 @@ import uuid
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from app.models import User, Account, Transaction, NetWorthHistory, AccountBalanceHistory, Liability, SavingsGoal, Paycheck, MonthlySpending, Cursor
+from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending, Cursor
 
 def update_accounts(user, access_token, accounts):
     for acc in accounts:

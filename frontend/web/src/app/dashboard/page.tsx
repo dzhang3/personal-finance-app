@@ -58,6 +58,10 @@ export default function Dashboard() {
     }
   };
 
+  const handleAddAccount = () => {
+    router.push('/link');
+  };
+
   if (isLoading) {
     return null;
   }
@@ -73,7 +77,7 @@ export default function Dashboard() {
             Logout
           </Button>
         </Box>
-        <TransactionList />
+        <TransactionList onAddAccount={handleAddAccount} />
       </Box>
     </Container>
   );

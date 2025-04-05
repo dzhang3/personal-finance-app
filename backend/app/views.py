@@ -7,7 +7,7 @@ from datetime import date, timedelta, datetime
 import uuid
 import traceback
 
-from app.models import User, Account, Transaction, NetWorthHistory, AccountBalanceHistory, Liability, SavingsGoal, Paycheck, MonthlySpending
+from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending
 
 from django.shortcuts import render
 from django.http import JsonResponse
@@ -47,10 +47,10 @@ import app.db_methods as db
 load_dotenv()
 
 PLAID_CLIENT_ID = os.getenv('PLAID_CLIENT_ID')
-PLAID_SECRET = os.getenv('PLAID_SECRET')
 PLAID_ENV = os.getenv('PLAID_ENV', 'sandbox')
 PLAID_PRODUCTS = os.getenv('PLAID_PRODUCTS', 'transactions').split(',')
 PLAID_COUNTRY_CODES = os.getenv('PLAID_COUNTRY_CODES', 'US').split(',')
+PLAID_SECRET = os.getenv('PLAID_SECRET_SANDBOX') if os.getenv('PLAID_ENV') == 'sandbox' else os.getenv('PLAID_SECRET_PRODUCTION')
 
 
 def empty_to_none(field):
@@ -167,13 +167,14 @@ def create_link_token(request):
                 client_user_id = str(request.user.id),
             ),
             transactions = LinkTokenTransactions(
-                days_requested = 60,
+                days_requested = 365,
             ),
             products=products,
             client_name='Finance App',
             country_codes=country_codes,
             language='en',
         )
+        print('request:', request)
         response = client.link_token_create(request)
         print('Link token created: %s' % response.link_token)
         return JsonResponse(response.to_dict())
@@ -203,7 +204,10 @@ def exchange_public_token(request):
         exchange_response = exchange_response if isinstance(exchange_response, dict) else exchange_response.to_dict()
 
         access_token = exchange_response['access_token']
-        print('access_token: %s' % access_token)
+        print('access_token: %s' % access_token)        
+        # Add a delay to allow Plaid to gather transaction data
+        time.sleep(30)  # 30 second delay
+        
         update_transactions_and_accounts_for_access_token(access_token, request.user)
         return JsonResponse(exchange_response)
     except plaid.ApiException as e:
@@ -251,6 +255,26 @@ def get_transactions(request):
     
     return JsonResponse({
         'transactions': transactions
+    })
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def force_transaction_sync(request):
+    # get accounts associated to user
+    accounts = Account.objects.filter(user=request.user)
+    if len(accounts) == 0:
+        print('No accounts found for user')
+        return JsonResponse({
+            'error': 'No accounts found for user',
+            'transactions': []
+        })
+    # get unique access tokens from accounts
+    access_tokens = set([acc.access_token for acc in accounts])
+    for access_token in access_tokens:
+        update_transactions_and_accounts_for_access_token(access_token, request.user)
+    print('Transactions synced for all accounts')
+    return JsonResponse({
+        'success': True
     })
 
 def update_transactions_and_accounts_for_access_token(access_token, user):

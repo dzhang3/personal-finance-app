@@ -57,24 +57,6 @@ class Transaction(models.Model):
     merchant_name = models.CharField(max_length=255, blank=True, null=True)
     payment_channel = models.CharField(max_length=255, blank=True, null=True)
 
-class NetWorthHistory(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    date = models.DateField()
-    net_worth = models.DecimalField(max_digits=12, decimal_places=2)
-
-class AccountBalanceHistory(models.Model):
-    account = models.ForeignKey(Account, on_delete=models.CASCADE)
-    date = models.DateField()
-    balance = models.DecimalField(max_digits=12, decimal_places=2)
-
-class Liability(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    account = models.ForeignKey(Account, on_delete=models.CASCADE)
-    liability_type = models.CharField(max_length=50)
-    amount_due = models.DecimalField(max_digits=12, decimal_places=2)
-    minimum_payment = models.DecimalField(max_digits=12, decimal_places=2)
-    due_date = models.DateField()
-    interest_rate = models.DecimalField(max_digits=5, decimal_places=2)
 
 class SavingsGoal(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)

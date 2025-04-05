@@ -20,4 +20,5 @@ urlpatterns = [
     path('get_liabilities/', views.get_liabilities, name='get_liabilities'),
     path('create_user/', views.create_user, name='create_user'),
     path('get_accounts/', views.get_accounts, name='get_accounts'),
+    path('force_transaction_sync/', views.force_transaction_sync, name='force_transaction_sync'),
 ]

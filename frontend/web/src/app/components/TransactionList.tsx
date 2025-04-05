@@ -223,6 +223,7 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [timeFrame, setTimeFrame] = useState<TimeFrame>('all');
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
@@ -235,9 +236,38 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
   const [isFilterDrawerOpen, setIsFilterDrawerOpen] = useState(false);
   const maxAmount = Math.max(...transactions.map(t => t.amount));
 
+  const handleForceSync = async () => {
+    try {
+      setIsSyncing(true);
+      setError(null);
+      
+      const response = await fetch('http://localhost:8000/api/force_transaction_sync/', {
+        method: 'GET',
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to sync transactions');
+      }
+
+      // Refetch transactions after sync
+      const data = await getTransactions();
+      const sortedTransactions = data.sort((a: Transaction, b: Transaction) => 
+        new Date(b.datetime).getTime() - new Date(a.datetime).getTime()
+      );
+      setAllTransactions(sortedTransactions);
+    } catch (err) {
+      console.error('Failed to sync transactions:', err);
+      setError('Failed to sync transactions');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   useEffect(() => {
     const fetchTransactions = async () => {
       try {
+        console.log('fetching transactions')
         const data = await getTransactions();
         // Sort transactions by date in descending order (most recent first)
         const sortedTransactions = data.sort((a: Transaction, b: Transaction) => 
@@ -339,6 +369,15 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
           Recent Transactions
         </Typography>
         <Box sx={{ display: 'flex', gap: 2 }}>
+          <Button
+            variant="outlined"
+            onClick={handleForceSync}
+            disabled={isSyncing}
+            startIcon={isSyncing ? <CircularProgress size={20} /> : null}
+            size="small"
+          >
+            {isSyncing ? 'Syncing...' : 'Refresh Transactions'}
+          </Button>
           <FormControl sx={{ minWidth: 150 }}>
             <InputLabel id="time-frame-label">Time Frame</InputLabel>
             <Select

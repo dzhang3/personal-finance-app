@@ -9,45 +9,33 @@ export default function LinkPage() {
   const router = useRouter();
   const [linkToken, setLinkToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const checkAuth = async () => {
+    const init = async () => {
       try {
-        const response = await fetch('http://localhost:8000/api/auth/check/', {
+        const response = await fetch('http://localhost:8000/api/create_link_token/', {
           credentials: 'include',
         });
-
-        if (!response.ok) {
-          router.push('/login');
-          return;
-        }
-
         const data = await response.json();
-        if (!data.isAuthenticated) {
-          router.push('/login');
-          return;
-        }
-
-        // Get link token
-        const linkResponse = await fetch('http://localhost:8000/api/create_link_token/', {
-          credentials: 'include',
-        });
-        const linkData = await linkResponse.json();
-        setLinkToken(linkData.link_token);
+        setLinkToken(data.link_token);
       } catch (error) {
-        console.error('Auth check failed:', error);
+        console.error('Failed to create link token:', error);
         setError('Failed to initialize bank connection');
       } finally {
         setIsLoading(false);
       }
     };
 
-    checkAuth();
-  }, [router]);
+    init();
+  }, []);
 
   const onSuccess = async (public_token: string, metadata: any) => {
     try {
+      setIsProcessing(true);
+      setError(null);
+      
       const csrfResponse = await fetch('http://localhost:8000/api/auth/csrf/', {
         method: 'GET',
         credentials: 'include',
@@ -72,6 +60,7 @@ export default function LinkPage() {
     } catch (error) {
       console.error('Failed to exchange public token:', error);
       setError('Failed to connect bank account');
+      setIsProcessing(false);
     }
   };
 
@@ -82,11 +71,18 @@ export default function LinkPage() {
 
   const { open, ready } = usePlaidLink(config);
 
-  if (isLoading) {
+  if (isLoading || isProcessing) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
-        <CircularProgress />
-      </Box>
+      <Container maxWidth="sm">
+        <Box sx={{ my: 4, textAlign: 'center' }}>
+          <CircularProgress />
+          {isProcessing && (
+            <Typography sx={{ mt: 2 }}>
+              Connecting your account and fetching transactions...
+            </Typography>
+          )}
+        </Box>
+      </Container>
     );
   }
 
