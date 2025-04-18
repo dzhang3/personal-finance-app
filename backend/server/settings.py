@@ -25,10 +25,10 @@ SECRET_KEY = 'django-insecure-0qzorzy*)8e)1u7__2bs@p-^6yh%=^^lq(=&5c7f)&x@&ojr04
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
-
+ALLOWED_HOSTS = ['personal-finance-app-opa9.onrender.com']
 
 # Application definition
+
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -37,11 +37,15 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'rest_framework',
+    'corsheaders',
+    'app',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -105,7 +109,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'EST'
 
 USE_I18N = True
 
@@ -121,3 +125,24 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Custom user model
+AUTH_USER_MODEL = 'app.User'
+
+# CORS settings
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+]
+
+CORS_ALLOW_CREDENTIALS = True
+
+# Add CSRF settings
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:3000",
+]
+
+# Add session settings
+SESSION_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_SECURE = False  # Set to True in production with HTTPS
+CSRF_COOKIE_SECURE = False    # Set to True in production with HTTPS
+SESSION_COOKIE_HTTPONLY = True
