@@ -1,4 +1,6 @@
 from django.urls import path
+from django.conf import settings
+from django.conf.urls.static import static
 from . import views
 
 # path: /api/*
@@ -23,4 +25,4 @@ urlpatterns = [
     path('force_transaction_sync/', views.force_transaction_sync, name='force_transaction_sync'),
     path('edit_transaction/', views.edit_transaction, name='edit_transaction'),
     path('delete_transaction/', views.delete_transaction, name='delete_transaction'),
-]
+] + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)

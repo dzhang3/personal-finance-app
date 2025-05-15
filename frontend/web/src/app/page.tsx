@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { CircularProgress, Box } from '@mui/material';
-import { checkHasAccounts, checkAuth } from '@services';
+import { checkHasAccounts, checkAuth } from '@/services/apiService';
 
 export default function Home() {
   const router = useRouter();

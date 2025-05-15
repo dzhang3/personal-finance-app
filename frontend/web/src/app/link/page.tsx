@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Container, Box, Typography, Button, CircularProgress, Alert } from '@mui/material';
 import { usePlaidLink, PlaidLinkOptions } from 'react-plaid-link';
-import { checkHasAccounts, checkAuth } from '@services';
+import { checkHasAccounts, checkAuth } from '@/services/apiService';
 
 export default function LinkPage() {
   const router = useRouter();

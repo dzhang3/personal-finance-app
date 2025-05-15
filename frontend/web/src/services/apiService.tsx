@@ -1,5 +1,3 @@
-import { Truculenta } from "next/font/google";
-
 const apiUrl = process.env.REACT_APP_API_HOST || 'http://localhost:8000';
 
 function getCSRFTokenFromCookie() {
@@ -33,7 +31,6 @@ export const getCsrfToken = async () => {
     return csrfToken;
 };
 
-// TODO - Add a new function to do step one for plaid
 export const getLinkToken = async () => {
   const response = await fetch(`${apiUrl}/api/create_link_token/`, {
     method: 'GET',

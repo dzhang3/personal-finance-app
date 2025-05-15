@@ -12,7 +12,7 @@ import {
   Alert,
 } from '@mui/material';
 import { useRouter } from 'next/navigation';
-import { loginUser } from '@services';
+import { loginUser } from '@/services/apiService';
 
 export default function LoginPage() {
   const router = useRouter();

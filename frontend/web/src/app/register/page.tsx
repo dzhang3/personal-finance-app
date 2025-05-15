@@ -13,8 +13,7 @@ import {
   CircularProgress,
 } from '@mui/material';
 import { useRouter } from 'next/navigation';
-import { registerUser } from '@services';
-import { register } from 'module';
+import { registerUser } from '@/services/apiService';
 
 export default function RegisterPage() {
   const router = useRouter();

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getTransactions, forceTransactionSync, editTransaction, deleteTransaction } from '@services';
+import { getTransactions, forceTransactionSync, editTransaction, deleteTransaction } from '@/services/apiService';
 import { 
   List, 
   ListItem, 
@@ -386,7 +386,8 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
   const handleDeleteTransaction = async (transactionId: string) => {
     console.log(`Deleting transaction with ID: ${transactionId}`);
     try {
-      console.log(`Deleting transaction with ID: ${transactionId}`);
+      const isConfirmed = window.confirm('Are you sure you want to delete this transaction?');
+      if (!isConfirmed) return;
       // Call the delete API endpoint
       await deleteTransaction(transactionId);
 

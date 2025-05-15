@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Container, Box, Typography, Button } from '@mui/material';
-import TransactionList from '../components/TransactionList';
+import TransactionList from '@/components/TransactionList';
 
 export default function Dashboard() {
   const router = useRouter();
