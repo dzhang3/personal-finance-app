@@ -1,7 +1,27 @@
+import { Truculenta } from "next/font/google";
+
 const apiUrl = process.env.REACT_APP_API_HOST || 'http://localhost:8000';
 
+function getCSRFTokenFromCookie() {
+    const name = 'csrftoken=';
+    const cookies = document.cookie.split(';');
+    for (let cookie of cookies) {
+      cookie = cookie.trim();
+      if (cookie.startsWith(name)) {
+        return cookie.substring(name.length);
+      }
+    }
+    return null;
+  }
+
 // Helper function to get CSRF token
-const getCsrfToken = async () => {
+export const getCsrfToken = async () => {
+    const csrfTokenFromCookie = getCSRFTokenFromCookie();
+    if (csrfTokenFromCookie) {
+        return csrfTokenFromCookie;
+    }
+
+    // If CSRF token is not in cookies, fetch it from the server
     const response = await fetch(`${apiUrl}/api/auth/csrf/`, {
         method: 'GET',
         credentials: 'include',
@@ -65,7 +85,9 @@ export const checkUserExists = async () => {
 }
 
 export const checkHasAccounts = async () => {
+    console.log('Checking if user has accounts...');
     const csrfToken = await getCsrfToken();
+    console.log(csrfToken);
     const response = await fetch(`${apiUrl}/api/check_has_accounts/`, {
         method: 'POST',
         headers: {
@@ -83,8 +105,13 @@ export const checkHasAccounts = async () => {
 }
 
 export const getTransactions = async () => {
+    const csrfToken = await getCsrfToken();
     const response = await fetch(`${apiUrl}/api/get_transactions/`, {
         method: 'GET',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken,
+        },
         credentials: 'include',
     });
     
@@ -97,8 +124,13 @@ export const getTransactions = async () => {
 }
 
 export const getAccounts = async () => {
+    const csrfToken = await getCsrfToken();
     const response = await fetch(`${apiUrl}/api/get_accounts/`, {
         method: 'GET',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken,
+        },
         credentials: 'include',
     });
     
@@ -122,4 +154,109 @@ export const createUser = async () => {
     
     const data = await response.json();
     return data.user;
+}
+
+export const loginUser = async (username: string, password: string) => {
+    const csrfToken = await getCsrfToken();
+    const response = await fetch('http://localhost:8000/api/auth/login/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken,
+        },
+        body: JSON.stringify({ username, password }),
+        credentials: 'include',
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+        throw new Error(data.error || 'Login failed');
+    }
+}
+
+export const registerUser = async (username: string, email: string, password: string) => {
+    const csrfToken = await getCsrfToken();
+    const response = await fetch('http://localhost:8000/api/auth/register/', {
+            method: 'POST',
+            headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken,
+            },
+            body: JSON.stringify({
+            username: username,
+            email: email || undefined, // Only send if not empty
+            password: password,
+            }),
+            credentials: 'include',
+        });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+        throw new Error(data.error || 'Registration failed');
+    }
+}
+
+export const checkAuth = async () => {
+    const response = await fetch('http://localhost:8000/api/auth/check/', {
+        credentials: 'include',
+    });
+    if (!response.ok) {
+        return false;
+    }
+    const data = await response.json();
+    return data.isAuthenticated;
+}
+
+export const forceTransactionSync = async () => {
+    const response = await fetch('http://localhost:8000/api/force_transaction_sync/', {
+        method: 'GET',
+        credentials: 'include',
+    });
+
+    if (!response.ok) {
+        throw new Error('Failed to sync transactions');
+    }
+}
+
+export const editTransaction = async (transactionId: string, new_name: string, new_amount: string, new_category: string) => {
+    const csrfToken = await getCsrfToken();
+    const response = await fetch(`${apiUrl}/api/edit_transaction/`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken,
+        },
+        credentials: 'include',
+        body: JSON.stringify({ 
+            transaction_id: transactionId, 
+            new_name: new_name, 
+            new_amount: new_amount, 
+            new_category: new_category
+        }),
+    });
+
+    if (!response.ok) {
+        throw new Error('Failed to edit transaction');
+    }
+
+    console.log(response);
+}
+
+export const deleteTransaction = async (transactionId: string) => {
+    const csrfToken = await getCsrfToken();
+    const response = await fetch(`${apiUrl}/api/delete_transaction/`, {
+        method: 'DELETE',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken,
+        },
+        credentials: 'include',
+        body: JSON.stringify({ transaction_id: transactionId }),
+    });
+
+    if (!response.ok) {
+        throw new Error('Failed to delete transaction');
+    }
 }

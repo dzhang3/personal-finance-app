@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getTransactions } from '@services';
+import { getTransactions, forceTransactionSync, editTransaction, deleteTransaction } from '@services';
 import { 
   List, 
   ListItem, 
@@ -9,7 +9,6 @@ import {
   Box,
   CircularProgress,
   Button,
-  useTheme,
   Select,
   MenuItem,
   FormControl,
@@ -19,13 +18,15 @@ import {
   Chip,
   Stack,
   Drawer,
-  Divider,
   Slider,
   InputAdornment
 } from '@mui/material';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 import CloseIcon from '@mui/icons-material/Close';
 import FilterListIcon from '@mui/icons-material/FilterList';
+import EditIcon from '@mui/icons-material/Edit';
+import DeleteIcon from '@mui/icons-material/Delete';
+
 
 interface Transaction {
   transaction_id: string;
@@ -219,13 +220,12 @@ const AmountRangeSlider = ({
 };
 
 export default function TransactionList({ onAddAccount }: TransactionListProps) {
-  const theme = useTheme();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [timeFrame, setTimeFrame] = useState<TimeFrame>('all');
+  const [timeFrame, setTimeFrame] = useState<TimeFrame>('month');
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const [filters, setFilters] = useState<FilterState>({
     category: '',
@@ -234,6 +234,16 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
   });
   const [categories, setCategories] = useState<string[]>([]);
   const [isFilterDrawerOpen, setIsFilterDrawerOpen] = useState(false);
+  const [activeTransactionId, setActiveTransactionId] = useState<string | null>(null);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState<string>('');
+  const [editAmount, setEditAmount] = useState('');
+  const [editCategory, setEditCategory] = useState('');
+
+  const handleTransactionClick = (transactionId: string) => {
+    setActiveTransactionId((prev) => (prev === transactionId ? null : transactionId));
+  };
   const maxAmount = Math.max(...transactions.map(t => t.amount));
 
   const handleForceSync = async () => {
@@ -241,14 +251,7 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
       setIsSyncing(true);
       setError(null);
       
-      const response = await fetch('http://localhost:8000/api/force_transaction_sync/', {
-        method: 'GET',
-        credentials: 'include',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to sync transactions');
-      }
+      forceTransactionSync();
 
       // Refetch transactions after sync
       const data = await getTransactions();
@@ -276,6 +279,7 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
         setAllTransactions(sortedTransactions);
         setLoading(false);
       } catch (err) {
+        console.error('Failed to fetch transactions:', err);
         setError('Failed to fetch transactions');
         setLoading(false);
       }
@@ -361,6 +365,47 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
   };
 
   const activeFiltersCount = Object.values(filters).filter(Boolean).length;
+
+  
+  const handleEditTransaction = async (transaction: Transaction) => {
+    const transactionId = transaction.transaction_id;
+    console.log(`Editing transaction with ID: ${transactionId}`);
+    console.log(editValue, editAmount, editCategory);
+    // Implement the edit logic here (e.g., show a modal with editable fields)
+    await editTransaction(transactionId, editValue, editAmount, editCategory);
+    setFilteredTransactions((prevTransactions) => 
+      prevTransactions.map((t) => 
+        t.transaction_id === transactionId 
+          ? { ...t, merchant_name: editValue, amount: parseFloat(editAmount), transaction_type: editCategory }
+          : t
+      )
+    );
+    setEditingId(null);
+  };
+  
+  const handleDeleteTransaction = async (transactionId: string) => {
+    console.log(`Deleting transaction with ID: ${transactionId}`);
+    try {
+      console.log(`Deleting transaction with ID: ${transactionId}`);
+      // Call the delete API endpoint
+      await deleteTransaction(transactionId);
+
+      // Update the transactions list after deletion
+      setAllTransactions((prev) => prev.filter(t => t.transaction_id !== transactionId));
+      setTransactions((prev) => prev.filter(t => t.transaction_id !== transactionId));
+      setFilteredTransactions((prev) => prev.filter(t => t.transaction_id !== transactionId));
+    } catch (err) {
+      console.error('Failed to delete transaction:', err);
+      setError('Failed to delete transaction');
+    }
+  };
+
+  const handleEditClick = (transaction: Transaction) => {
+    setEditingId(transaction.transaction_id);
+    setEditValue(transaction.merchant_name || transaction.description);
+    setEditAmount(transaction.amount.toString());
+    setEditCategory(transaction.transaction_type);
+  };
 
   return (
     <Paper elevation={2} sx={{ maxWidth: 800, mx: 'auto', mt: 4, p: 2 }}>
@@ -537,7 +582,7 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
                 ))}
               </Pie>
               <Tooltip 
-                formatter={(value: number, name: string, props: any) => {
+                formatter={(value: number, name: string) => {
                   const total = pieData.reduce((sum, item) => sum + item.value, 0);
                   const percentage = ((value / total) * 100).toFixed(1);
                   return [`${formatCurrency(value)} (${percentage}%)`, name];
@@ -570,49 +615,85 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
               <ListItem
                 key={transaction.transaction_id}
                 divider
-                sx={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between',
-                  py: 2
-                }}
+                onClick={() => handleTransactionClick(transaction.transaction_id)}
+                sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 2, cursor: 'pointer' }}
               >
-                <Box sx={{ flex: 1 }}>
-                  <ListItemText
-                    primary={transaction.merchant_name || transaction.description}
-                    secondary={
-                      <Box component="span" sx={{ display: 'block' }}>
-                        <Typography variant="body2" component="span" color="textSecondary">
-                          {date}
-                        </Typography>
-                        {time && (
-                          <Typography 
-                            variant="body2" 
-                            component="span" 
-                            color="textSecondary" 
-                            sx={{ ml: 1 }}
-                          >
-                            {time}
-                          </Typography>
-                        )}
-                        <Typography 
-                          variant="body2" 
-                          component="div" 
-                          color="textSecondary"
-                          sx={{ mt: 0.5 }}
-                        >
-                          {transaction.account.institution !== 'Unknown' ? `${transaction.account.institution} • ` : ''}{transaction.account.name} • {transaction.transaction_type}
-                        </Typography>
+                {editingId === transaction.transaction_id ? (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1 }}>
+                    <TextField
+                      value={editValue}
+                      onChange={(e) => setEditValue(e.target.value)}
+                      size="small"
+                      fullWidth
+                      label="Name"
+                    />
+                    <TextField
+                      value={editAmount}
+                      onChange={(e) => setEditAmount(e.target.value)}
+                      size="small"
+                      label="Amount"
+                    />
+                    <TextField
+                      value={editCategory}
+                      onChange={(e) => setEditCategory(e.target.value)}
+                      size="small"
+                      label="Category"
+                    />
+                    <Button variant="contained" size="small" onClick={() => handleEditTransaction(transaction)}>
+                      Save
+                    </Button>
+                  </Box>
+                ) : (
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                    <Box>
+                      <ListItemText
+                        primary={transaction.merchant_name || transaction.description}
+                        secondary={
+                          <Box component="span" sx={{ display: 'block' }}>
+                            <Typography variant="body2" component="span" color="textSecondary">
+                              {date}
+                            </Typography>
+                            {time && (
+                              <Typography 
+                                variant="body2" 
+                                component="span" 
+                                color="textSecondary" 
+                                sx={{ ml: 1 }}
+                              >
+                                {time}
+                              </Typography>
+                            )}
+                            <Typography 
+                              variant="body2" 
+                              component="div" 
+                              color="textSecondary"
+                              sx={{ mt: 0.5 }}
+                            >
+                              {transaction.account.institution !== 'Unknown' ? `${transaction.account.institution} • ` : ''}{transaction.account.name} • {transaction.transaction_type}
+                            </Typography>
+                          </Box>
+                        }
+                      />
+                    </Box>
+                    <Typography
+                      variant="body1"
+                      color={transaction.amount > 0 ? 'error.main' : 'success.main'}
+                      sx={{ fontWeight: 'medium' }}
+                    >
+                      {transaction.amount}
+                    </Typography>
+                    {activeTransactionId === transaction.transaction_id && (
+                      <Box sx={{ textAlign: 'right', minWidth: 80, display: 'flex', gap: 1 }}>
+                        <IconButton onClick={() => handleEditClick(transaction)} size="small">
+                          <EditIcon />
+                        </IconButton>
+                        <IconButton onClick={() => handleDeleteTransaction(transaction.transaction_id)} size="small">
+                          <DeleteIcon />
+                        </IconButton>
                       </Box>
-                    }
-                  />
-                </Box>
-                <Typography
-                  variant="body1"
-                  color={transaction.amount > 0 ? 'error.main' : 'success.main'}
-                  sx={{ fontWeight: 'medium', ml: 2 }}
-                >
-                  ${Math.abs(transaction.amount).toFixed(2)}
-                </Typography>
+                    )}
+                  </Box>
+                )}
               </ListItem>
             );
           })}

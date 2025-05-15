@@ -3,33 +3,19 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { CircularProgress, Box } from '@mui/material';
+import { checkHasAccounts, checkAuth } from '@services';
 
 export default function Home() {
   const router = useRouter();
 
   useEffect(() => {
-    const checkAuth = async () => {
+    const handleAuth = async () => {
       try {
-        const response = await fetch('http://localhost:8000/api/auth/check/', {
-          credentials: 'include',
-        });
-
-        if (!response.ok) {
-          // Not authenticated, redirect to login
-          router.push('/login');
-          return;
-        }
-
-        const data = await response.json();
-        if (data.isAuthenticated) {
-          // User is authenticated, check if they have accounts
-          const accountsResponse = await fetch('http://localhost:8000/api/check_has_accounts/', {
-            method: 'POST',
-            credentials: 'include',
-          });
-          const accountsData = await accountsResponse.json();
-
-          if (accountsData.hasAccounts) {
+        if (await checkAuth()) {
+          // Check if the user has linked accounts
+          console.log('calling checkHasAccounts');
+          const hasAccounts = await checkHasAccounts();
+          if (hasAccounts) {
             router.push('/dashboard'); // Or wherever your main app page is
           } else {
             router.push('/link'); // Or wherever your Plaid link page is
@@ -43,7 +29,7 @@ export default function Home() {
       }
     };
 
-    checkAuth();
+    handleAuth();
   }, [router]);
 
   return (

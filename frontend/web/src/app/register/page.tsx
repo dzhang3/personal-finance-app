@@ -13,6 +13,8 @@ import {
   CircularProgress,
 } from '@mui/material';
 import { useRouter } from 'next/navigation';
+import { registerUser } from '@services';
+import { register } from 'module';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -46,44 +48,17 @@ export default function RegisterPage() {
     }
 
     try {
-      // Get CSRF token
-      const csrfResponse = await fetch('http://localhost:8000/api/auth/csrf/', {
-        method: 'GET',
-        credentials: 'include',
-      });
-      
-      if (!csrfResponse.ok) {
-        throw new Error('Failed to get CSRF token');
+      registerUser(formData.username, formData.email, formData.password);
+      router.push('/');
+    } catch (err) {
+      if (err instanceof Error) {
+        console.error('Registration error:', err);
+        setError(err.message || 'An error occurred during registration');
       }
-      
-      const { csrfToken } = await csrfResponse.json();
-
-      // Register user
-      const response = await fetch('http://localhost:8000/api/auth/register/', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRFToken': csrfToken,
-        },
-        body: JSON.stringify({
-          username: formData.username,
-          email: formData.email || undefined, // Only send if not empty
-          password: formData.password,
-        }),
-        credentials: 'include',
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Registration failed');
+      else {
+        console.error('Unexpected error:', err);
+        setError('An unexpected error occurred');
       }
-
-      // Redirect to dashboard since user is automatically logged in
-      router.push('/dashboard');
-    } catch (err: any) {
-      console.error('Registration error:', err);
-      setError(err.message || 'An error occurred during registration');
     } finally {
       setIsLoading(false);
     }

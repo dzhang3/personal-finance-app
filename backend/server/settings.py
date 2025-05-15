@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-0qzorzy*)8e)1u7__2bs@p-^6yh%=^^lq(=&5c7f)&x@&ojr04
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['personal-finance-app-opa9.onrender.com']
+ALLOWED_HOSTS = ['personal-finance-app-opa9.onrender.com','localhost']
 
 # Application definition
 

@@ -21,4 +21,6 @@ urlpatterns = [
     path('create_user/', views.create_user, name='create_user'),
     path('get_accounts/', views.get_accounts, name='get_accounts'),
     path('force_transaction_sync/', views.force_transaction_sync, name='force_transaction_sync'),
+    path('edit_transaction/', views.edit_transaction, name='edit_transaction'),
+    path('delete_transaction/', views.delete_transaction, name='delete_transaction'),
 ]

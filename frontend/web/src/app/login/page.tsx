@@ -12,6 +12,7 @@ import {
   Alert,
 } from '@mui/material';
 import { useRouter } from 'next/navigation';
+import { loginUser } from '@services';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -24,34 +25,18 @@ export default function LoginPage() {
     setError('');
 
     try {
-      // Get CSRF token first
-      const csrfResponse = await fetch('http://localhost:8000/api/auth/csrf/', {
-        method: 'GET',
-        credentials: 'include',
-      });
-      const { csrfToken } = await csrfResponse.json();
-
+      console.log("this is testing console")
       // Attempt login
-      const response = await fetch('http://localhost:8000/api/auth/login/', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRFToken': csrfToken,
-        },
-        body: JSON.stringify({ username, password }),
-        credentials: 'include',
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Login failed');
-      }
+      loginUser(username, password);
 
       // Redirect to main page on success
       router.push('/');
-    } catch (err: any) {
-      setError(err.message || 'An error occurred during login');
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError('An unknown error occurred during login');
+      }
     }
   };
 
