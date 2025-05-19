@@ -282,24 +282,35 @@ def force_transaction_sync(request):
 def update_transactions_and_accounts_for_access_token(access_token, user):
     try:
         while True:
-            response = send_transaction_request(access_token)
-            if 'error' in response:
-                print('Error in transaction sync:', response['error'])
-                return False
-            accounts = response['accounts']
+            try:
+                response = send_transaction_request(access_token)
+                if 'error' in response:
+                    print('Error in transaction sync:', response['error'])
+                    return False
+                accounts = response['accounts']
 
-            print('updating accounts')
-            db.update_accounts(user, access_token, accounts)
-            
-            print('updating cursor')
-            db.update_cursor(user, access_token, response['next_cursor'])
-            
-            print('updating transactions')
-            db.update_transactions(user, response)
+                print('updating accounts')
+                db.update_accounts(user, access_token, accounts)
+                
+                print('updating cursor')
+                db.update_cursor(user, access_token, response['next_cursor'])
+                
+                print('updating transactions')
+                db.update_transactions(user, response)
 
-            if response['has_more'] == False:
-                print('No more transactions to sync')
-                break
+                if response['has_more'] == False:
+                    print('No more transactions to sync')
+                    break
+            except Exception as e:
+                print('Error in transaction sync:', str(e))
+                error_response = json.loads(e.body)
+                if error_response.get('error_code') == 'TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION':
+                    print("trying again")
+                    time.sleep(5)
+                    continue
+                else:
+                    print('Error details:', error_response)
+                    break
         
     except Exception as e:
         print('Error processing access token:', str(e))
