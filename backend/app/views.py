@@ -109,21 +109,6 @@ user_token = None
 
 item_id = None
 
-from django.conf import settings
-def debug_settings(request):
-    return JsonResponse({
-        "DEBUG": settings.DEBUG,
-        "SESSION_COOKIE_SECURE": settings.SESSION_COOKIE_SECURE,
-        "CSRF_COOKIE_SECURE": settings.CSRF_COOKIE_SECURE,
-        "SESSION_COOKIE_SAMESITE": settings.SESSION_COOKIE_SAMESITE,
-        "CSRF_COOKIE_SAMESITE": settings.CSRF_COOKIE_SAMESITE,
-        "SESSION_COOKIE_HTTPONLY": settings.SESSION_COOKIE_HTTPONLY,
-        "ALLOWED_HOSTS": settings.ALLOWED_HOSTS,
-        "CORS_ALLOWED_ORIGINS": settings.CORS_ALLOWED_ORIGINS,
-        "CSRF_TRUSTED_ORIGINS": settings.CSRF_TRUSTED_ORIGINS,
-        "CORS_ALLOW_CREDENTIALS": settings.CORS_ALLOW_CREDENTIALS,
-    })
-
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def check_user_exists(request):
@@ -236,10 +221,6 @@ def exchange_public_token(request):
             'error': str(e)
         }, status=500)
     
-def create_login(access_token, item_id):
-    #TODO: create login object
-    pass
-    
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -291,8 +272,8 @@ def force_transaction_sync(request):
     for acc in accounts:
         print('account:', model_to_dict(acc))
     access_tokens = set([acc.access_token for acc in accounts])
-    # for access_token in access_tokens:
-    #     update_transactions_and_accounts_for_access_token(access_token, request.user)
+    for access_token in access_tokens:
+        update_transactions_and_accounts_for_access_token(access_token, request.user)
     print('Transactions synced for all accounts')
     return JsonResponse({
         'success': True
