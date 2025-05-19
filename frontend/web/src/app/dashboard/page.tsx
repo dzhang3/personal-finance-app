@@ -4,25 +4,16 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Container, Box, Typography, Button } from '@mui/material';
 import TransactionList from '@/components/TransactionList';
+import { checkAuth, logoutUser } from '@/services/apiService';
 
 export default function Dashboard() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const response = await fetch('http://localhost:8000/api/auth/check/', {
-          credentials: 'include',
-        });
-
-        if (!response.ok) {
-          router.push('/login');
-          return;
-        }
-
-        const data = await response.json();
-        if (!data.isAuthenticated) {
+    const handleAuth = async () => {
+      try { 
+        if (!(await checkAuth())) {
           router.push('/login');
         }
       } catch (error) {
@@ -33,25 +24,12 @@ export default function Dashboard() {
       }
     };
 
-    checkAuth();
+    handleAuth();
   }, [router]);
 
   const handleLogout = async () => {
     try {
-      const csrfResponse = await fetch('http://localhost:8000/api/auth/csrf/', {
-        method: 'GET',
-        credentials: 'include',
-      });
-      const { csrfToken } = await csrfResponse.json();
-
-      await fetch('http://localhost:8000/api/auth/logout/', {
-        method: 'POST',
-        headers: {
-          'X-CSRFToken': csrfToken,
-        },
-        credentials: 'include',
-      });
-
+      await logoutUser();
       router.push('/login');
     } catch (error) {
       console.error('Logout failed:', error);

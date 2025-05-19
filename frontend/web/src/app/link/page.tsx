@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Container, Box, Typography, Button, CircularProgress, Alert } from '@mui/material';
 import { usePlaidLink, PlaidLinkOptions } from 'react-plaid-link';
-import { checkHasAccounts, checkAuth } from '@/services/apiService';
+import { checkHasAccounts, checkAuth, exchangePublicToken, getLinkToken } from '@/services/apiService';
 
 export default function LinkPage() {
   const router = useRouter();
@@ -19,11 +19,8 @@ export default function LinkPage() {
   useEffect(() => {
     const init = async () => {
       try {
-        const response = await fetch('http://localhost:8000/api/create_link_token/', {
-          credentials: 'include',
-        });
-        const data = await response.json();
-        setLinkToken(data.link_token);
+        const linkToken = await getLinkToken();
+        setLinkToken(linkToken);
       } catch (error) {
         console.error('Failed to create link token:', error);
         setError('Failed to initialize bank connection');
@@ -69,25 +66,7 @@ export default function LinkPage() {
       setIsProcessing(true);
       setError(null);
       
-      const csrfResponse = await fetch('http://localhost:8000/api/auth/csrf/', {
-        method: 'GET',
-        credentials: 'include',
-      });
-      const { csrfToken } = await csrfResponse.json();
-
-      const response = await fetch('http://localhost:8000/api/exchange_public_token/', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRFToken': csrfToken,
-        },
-        body: JSON.stringify({ public_token }),
-        credentials: 'include',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to exchange token');
-      }
+      await exchangePublicToken(public_token);
 
       router.push('/dashboard');
     } catch (error) {

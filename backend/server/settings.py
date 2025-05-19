@@ -136,6 +136,7 @@ AUTH_USER_MODEL = 'app.User'
 # CORS settings
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    'https://personal-finance-app-opa9.onrender.com',
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -143,6 +144,7 @@ CORS_ALLOW_CREDENTIALS = True
 # Add CSRF settings
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",
+    'https://personal-finance-app-opa9.onrender.com',
 ]
 
 # Add session settings

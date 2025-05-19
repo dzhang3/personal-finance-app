@@ -1,4 +1,4 @@
-const apiUrl = process.env.REACT_APP_API_HOST || 'http://localhost:8000';
+const apiUrl = process.env.BACKEND_URL || 'http://localhost:8000';
 
 function getCSRFTokenFromCookie() {
     const name = 'csrftoken=';
@@ -14,6 +14,7 @@ function getCSRFTokenFromCookie() {
 
 // Helper function to get CSRF token
 export const getCsrfToken = async () => {
+    console.log("LAMOAIWEMOIAMFAOWIEFMAWOIFMAWOIFMAWOIEFMAWOIEFM"+ apiUrl);
     const csrfTokenFromCookie = getCSRFTokenFromCookie();
     if (csrfTokenFromCookie) {
         return csrfTokenFromCookie;
@@ -69,6 +70,7 @@ export const exchangePublicToken = async (publicToken: string) => {
 }
 
 export const checkUserExists = async () => {
+    console.log("LAMOAIWEMOIAMFAOWIEFMAWOIFMAWOIFMAWOIEFMAWOIEFM"+ apiUrl);
     const response = await fetch(`${apiUrl}/api/check_user_exists/`, {
         method: 'GET',
     });
@@ -82,6 +84,7 @@ export const checkUserExists = async () => {
 }
 
 export const checkHasAccounts = async () => {
+    console.log("LAMOAIWEMOIAMFAOWIEFMAWOIFMAWOIFMAWOIEFMAWOIEFM"+ apiUrl);
     console.log('Checking if user has accounts...');
     const csrfToken = await getCsrfToken();
     console.log(csrfToken);
@@ -155,7 +158,7 @@ export const createUser = async () => {
 
 export const loginUser = async (username: string, password: string) => {
     const csrfToken = await getCsrfToken();
-    const response = await fetch('http://localhost:8000/api/auth/login/', {
+    const response = await fetch(`${apiUrl}/api/auth/login/`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -174,7 +177,7 @@ export const loginUser = async (username: string, password: string) => {
 
 export const registerUser = async (username: string, email: string, password: string) => {
     const csrfToken = await getCsrfToken();
-    const response = await fetch('http://localhost:8000/api/auth/register/', {
+    const response = await fetch(`${apiUrl}/api/auth/register/`, {
             method: 'POST',
             headers: {
             'Content-Type': 'application/json',
@@ -196,7 +199,8 @@ export const registerUser = async (username: string, email: string, password: st
 }
 
 export const checkAuth = async () => {
-    const response = await fetch('http://localhost:8000/api/auth/check/', {
+    console.log("This is called link: "+ `${apiUrl}/api/auth/check`);
+    const response = await fetch(`${apiUrl}/api/auth/check/`, {
         credentials: 'include',
     });
     if (!response.ok) {
@@ -207,7 +211,7 @@ export const checkAuth = async () => {
 }
 
 export const forceTransactionSync = async () => {
-    const response = await fetch('http://localhost:8000/api/force_transaction_sync/', {
+    const response = await fetch(`${apiUrl}/api/force_transaction_sync/`, {
         method: 'GET',
         credentials: 'include',
     });
@@ -255,5 +259,21 @@ export const deleteTransaction = async (transactionId: string) => {
 
     if (!response.ok) {
         throw new Error('Failed to delete transaction');
+    }
+}
+
+export const logoutUser = async () => {
+    const csrfToken = await getCsrfToken();
+    const response = await fetch(`${apiUrl}/api/auth/logout/`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken,
+        },
+        credentials: 'include',
+    });
+
+    if (!response.ok) {
+        throw new Error('Logout failed');
     }
 }
