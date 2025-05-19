@@ -6,6 +6,7 @@ import time
 from datetime import date, timedelta, datetime
 import uuid
 import traceback
+import logging
 
 from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending
 

@@ -33,19 +33,24 @@ export const getCsrfToken = async () => {
 };
 
 export const getLinkToken = async () => {
-  const response = await fetch(`${apiUrl}/api/create_link_token/`, {
+    const csrfToken = await getCsrfToken();
+    const response = await fetch(`${apiUrl}/api/create_link_token/`, {
     method: 'GET',
     credentials: 'include',
-  });
+    headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': csrfToken,
+    },
+    });
 
-  if (!response.ok) {
+    if (!response.ok) {
     // Handle errors if the request fails (e.g., 4xx or 5xx response)
     throw new Error('Failed to fetch link token');
-  }
+    }
 
-  const data = await response.json();
-  console.log(data);
-  return data.link_token;
+    const data = await response.json();
+    console.log(data);
+    return data.link_token;
 }
 
 export const exchangePublicToken = async (publicToken: string) => {
@@ -200,8 +205,13 @@ export const registerUser = async (username: string, email: string, password: st
 
 export const checkAuth = async () => {
     console.log("This is called link: "+ `${apiUrl}/api/auth/check`);
+    const csrfToken = await getCsrfToken();
     const response = await fetch(`${apiUrl}/api/auth/check/`, {
         credentials: 'include',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken,
+        },
     });
     if (!response.ok) {
         return false;
@@ -211,9 +221,14 @@ export const checkAuth = async () => {
 }
 
 export const forceTransactionSync = async () => {
+    const csrfToken = await getCsrfToken();
     const response = await fetch(`${apiUrl}/api/force_transaction_sync/`, {
         method: 'GET',
         credentials: 'include',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken,
+        },
     });
 
     if (!response.ok) {
