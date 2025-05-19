@@ -153,4 +153,4 @@ CSRF_TRUSTED_ORIGINS = [
 SESSION_COOKIE_SAMESITE = 'Lax'
 SESSION_COOKIE_SECURE = os.getenv('PRODUCTION', 'False') == 'True'  # Set to True in production with HTTPS
 CSRF_COOKIE_SECURE = os.getenv('PRODUCTION', 'False') == 'True'    # Set to True in production with HTTPS
-SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_HTTPONLY = os.getenv('PRODUCTION', 'False') != 'True'  # Set to False in production with HTTPS

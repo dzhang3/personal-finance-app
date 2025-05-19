@@ -1,9 +1,13 @@
+// 'use server'
+
+// import { cookies } from "next/headers";
 const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 function getCSRFTokenFromCookie() {
     const name = 'csrftoken=';
     const cookies = document.cookie.split(';');
-    console.log(cookies);
+
+    console.log('cookies',cookies);
     for (let cookie of cookies) {
       cookie = cookie.trim();
       if (cookie.startsWith(name)) {
