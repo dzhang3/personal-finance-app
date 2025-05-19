@@ -19,7 +19,6 @@ function getCSRFTokenFromCookie() {
 
 // Helper function to get CSRF token
 export const getCsrfToken = async () => {
-    console.log("LAMOAIWEMOIAMFAOWIEFMAWOIFMAWOIFMAWOIEFMAWOIEFM"+ apiUrl);
     const csrfTokenFromCookie = getCSRFTokenFromCookie();
     if (csrfTokenFromCookie) {
         return csrfTokenFromCookie;
@@ -80,7 +79,6 @@ export const exchangePublicToken = async (publicToken: string) => {
 }
 
 export const checkUserExists = async () => {
-    console.log("LAMOAIWEMOIAMFAOWIEFMAWOIFMAWOIFMAWOIEFMAWOIEFM"+ apiUrl);
     const response = await fetch(`${apiUrl}/api/check_user_exists/`, {
         method: 'GET',
     });
@@ -94,7 +92,6 @@ export const checkUserExists = async () => {
 }
 
 export const checkHasAccounts = async () => {
-    console.log("LAMOAIWEMOIAMFAOWIEFMAWOIFMAWOIFMAWOIEFMAWOIEFM"+ apiUrl);
     console.log('Checking if user has accounts...');
     const csrfToken = await getCsrfToken();
     console.log(csrfToken);
