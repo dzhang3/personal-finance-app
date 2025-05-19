@@ -109,6 +109,21 @@ user_token = None
 
 item_id = None
 
+from django.conf import settings
+def debug_settings(request):
+    return JsonResponse({
+        "DEBUG": settings.DEBUG,
+        "SESSION_COOKIE_SECURE": settings.SESSION_COOKIE_SECURE,
+        "CSRF_COOKIE_SECURE": settings.CSRF_COOKIE_SECURE,
+        "SESSION_COOKIE_SAMESITE": settings.SESSION_COOKIE_SAMESITE,
+        "CSRF_COOKIE_SAMESITE": settings.CSRF_COOKIE_SAMESITE,
+        "SESSION_COOKIE_HTTPONLY": settings.SESSION_COOKIE_HTTPONLY,
+        "ALLOWED_HOSTS": settings.ALLOWED_HOSTS,
+        "CORS_ALLOWED_ORIGINS": settings.CORS_ALLOWED_ORIGINS,
+        "CSRF_TRUSTED_ORIGINS": settings.CSRF_TRUSTED_ORIGINS,
+        "CORS_ALLOW_CREDENTIALS": settings.CORS_ALLOW_CREDENTIALS,
+    })
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def check_user_exists(request):

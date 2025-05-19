@@ -25,4 +25,6 @@ urlpatterns = [
     path('force_transaction_sync/', views.force_transaction_sync, name='force_transaction_sync'),
     path('edit_transaction/', views.edit_transaction, name='edit_transaction'),
     path('delete_transaction/', views.delete_transaction, name='delete_transaction'),
-] + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+
+    path('debug-settings/', views.debug_settings, name='debug_settings'),
+]
