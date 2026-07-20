@@ -6,6 +6,7 @@ import time
 from datetime import date, timedelta, datetime
 import uuid
 import traceback
+import logging
 
 from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending
 
@@ -17,7 +18,9 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from django.contrib.auth import authenticate, login, logout
 from django.middleware.csrf import get_token
+from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import status
+from django.forms.models import model_to_dict
 
 from dotenv import load_dotenv
 import plaid
@@ -118,6 +121,7 @@ def check_user_exists(request):
 def has_accounts(request):
     accounts = Account.objects.filter(user=request.user)
     has_accounts = len(accounts) > 0
+    print('User has accounts:', has_accounts)
     return JsonResponse({
         'hasAccounts': has_accounts,
     })
@@ -217,10 +221,6 @@ def exchange_public_token(request):
             'error': str(e)
         }, status=500)
     
-def create_login(access_token, item_id):
-    #TODO: create login object
-    pass
-    
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -269,6 +269,8 @@ def force_transaction_sync(request):
             'transactions': []
         })
     # get unique access tokens from accounts
+    for acc in accounts:
+        print('account:', model_to_dict(acc))
     access_tokens = set([acc.access_token for acc in accounts])
     for access_token in access_tokens:
         update_transactions_and_accounts_for_access_token(access_token, request.user)
@@ -279,21 +281,36 @@ def force_transaction_sync(request):
 
 def update_transactions_and_accounts_for_access_token(access_token, user):
     try:
-        response = send_transaction_request(access_token)
-        if 'error' in response:
-            print('Error in transaction sync:', response['error'])
-            return False
-        accounts = response['accounts']
-        print(response)
+        while True:
+            try:
+                response = send_transaction_request(access_token)
+                if 'error' in response:
+                    print('Error in transaction sync:', response['error'])
+                    return False
+                accounts = response['accounts']
 
-        print('updating accounts')
-        db.update_accounts(user, access_token, accounts)
-        
-        print('updating cursor')
-        db.update_cursor(user, access_token, response['next_cursor'])
-        
-        print('updating transactions')
-        db.update_transactions(user, response)
+                print('updating accounts')
+                db.update_accounts(user, access_token, accounts)
+                
+                print('updating cursor')
+                db.update_cursor(user, access_token, response['next_cursor'])
+                
+                print('updating transactions')
+                db.update_transactions(user, response)
+
+                if response['has_more'] == False:
+                    print('No more transactions to sync')
+                    break
+            except Exception as e:
+                print('Error in transaction sync:', str(e))
+                error_response = json.loads(e.body)
+                if error_response.get('error_code') == 'TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION':
+                    print("trying again")
+                    time.sleep(5)
+                    continue
+                else:
+                    print('Error details:', error_response)
+                    break
         
     except Exception as e:
         print('Error processing access token:', str(e))
@@ -447,6 +464,7 @@ def logout_user(request):
     logout(request)
     return Response({'message': 'Logged out successfully'})
 
+@ensure_csrf_cookie
 @api_view(['GET'])
 def get_csrf_token(request):
     return Response({'csrfToken': get_token(request)})
@@ -461,5 +479,67 @@ def check_auth(request):
             'email': request.user.email
         }
     })
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def edit_transaction(request):
+    print('edit transaction called', request.data)
+    try:
+        transaction_id = request.data.get('transaction_id')
+        new_name = request.data.get('new_name')
+        new_amount = request.data.get('new_amount')
+        new_category = request.data.get('new_category')
+
+        if not transaction_id:
+            return Response({'error': 'Transaction ID is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        transaction = Transaction.objects.filter(transaction_id=transaction_id).first()
+        if not transaction:
+            return Response({'error': 'Transaction not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if new_name:
+            transaction.merchant_name = new_name
+        if new_amount:
+            transaction.amount = new_amount
+        if new_category:
+            transaction.transaction_type = new_category
+
+        transaction.save()
+
+        print("lmao:", model_to_dict(transaction))
+
+        return Response({
+            'message': 'Transaction updated successfully',
+            'transaction': model_to_dict(transaction)
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        print('Error updating transaction:', str(e))
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_transaction(request):
+    print('delete transaction called', request.data)
+    try:
+        transaction_id = request.data.get('transaction_id')
+
+        if not transaction_id:
+            return Response({'error': 'Transaction ID is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        transaction = Transaction.objects.filter(transaction_id=transaction_id).first()
+        if not transaction:
+            return Response({'error': 'Transaction not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        transaction.delete()
+
+        return Response({
+            'message': 'Transaction deleted successfully'
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        print('Error deleting transaction:', str(e))
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     
