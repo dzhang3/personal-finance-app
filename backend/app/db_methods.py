@@ -8,7 +8,7 @@ import uuid
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending, Cursor
+from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending, PlaidItem
 
 def update_accounts(user, access_token, accounts):
     for acc in accounts:
@@ -26,19 +26,17 @@ def update_accounts(user, access_token, accounts):
             )
 
 def update_cursor(user, access_token, cursor):
-    # update or create cursor where user and access_id match
-    Cursor.objects.update_or_create(
-        user=user,
-        access_token=access_token,
-        defaults={'cursor': cursor},
-    )
+    # Stopgap: looks the Item up by access token until callers pass a PlaidItem directly.
+    updated = PlaidItem.objects.filter(user=user, access_token=access_token).update(cursor=cursor)
+    if updated == 0:
+        raise ValueError("No PlaidItem found for this access token; cursor not saved")
 
 def update_transactions(user, transactions):
     # Initialize accounts dictionary for caching Account objects
     accounts = {}
     add_transactions(transactions['added'], accounts, user)
     modify_transactions(transactions['modified'], accounts, user)
-    remove_transactions(transactions['removed'])
+    remove_transactions([r['transaction_id'] for r in transactions['removed']])
     
 def get_account_transactions(account, start_date, end_date):
     return Transaction.objects.filter(account=account, datetime__gte=start_date, datetime__lte=end_date).order_by('datetime')
@@ -149,8 +147,10 @@ def remove_transactions(transactions):
     Transaction.objects.filter(transaction_id__in=transactions).delete()
 
 def get_cursor(access_token):
-    try:
-        cursor = Cursor.objects.get(access_token=access_token)
-        return cursor.cursor
-    except Cursor.DoesNotExist:
-        return None
+    # Stopgap: looks the Item up by access token until callers pass a PlaidItem directly.
+    # Returns None if the Item has no cursor yet (first sync) or doesn't exist.
+    return (
+        PlaidItem.objects.filter(access_token=access_token)
+        .values_list('cursor', flat=True)
+        .first()
+    )

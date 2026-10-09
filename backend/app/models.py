@@ -31,15 +31,10 @@ class User(AbstractUser):
     def __str__(self):
         return f"User(id={self.id}, username={self.username})"
 
-class Cursor(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    access_token = models.CharField(max_length=255)
-    cursor = models.CharField(max_length=255)
-
 class Account(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     account_id = models.CharField(max_length=255)
-    access_token = models.CharField(max_length=255)
+    plaid_item = models.ForeignKey('PlaidItem', on_delete=models.CASCADE)
     name = models.CharField(max_length=255)
     account_type = models.CharField(max_length=50, choices=[('bank', 'Bank'), ('credit_card', 'Credit Card'), ('loan', 'Loan'), ('investment', 'Investment')])
     balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -86,3 +81,34 @@ class MonthlySpending(models.Model):
     amount_spent_transportation = models.DecimalField(max_digits=12, decimal_places=2)
     amount_spent_misc = models.DecimalField(max_digits=12, decimal_places=2)
 
+class PlaidItem(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    item_id = models.CharField(max_length=255, unique=True)
+    access_token = models.CharField(max_length=255)
+    institution_name = models.CharField(max_length=255, blank=True, null=True)
+    cursor = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+class SyncJob(models.Model):
+    class Status(models.TextChoices):
+        QUEUED = 'queued', 'Queued'
+        IN_PROGRESS = 'in_progress', 'In Progress'
+        COMPLETED = 'completed', 'Completed'
+        FAILED = 'failed', 'Failed'
+
+    class Step(models.TextChoices):
+        FETCH_TRANSACTIONS = 'fetch_transactions', 'Fetch Transactions'
+        UPDATE_DB = 'update_db', 'Update Database'
+    
+    plaid_item = models.ForeignKey(PlaidItem, on_delete=models.CASCADE)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.QUEUED)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    error_code = models.CharField(max_length=100, blank=True, null=True)
+    error_message = models.TextField(blank=True, null=True)
+    attempt_number = models.IntegerField(default=1)
+    step = models.CharField(max_length=50, choices=Step.choices, default=None, null=True)
+    added_count = models.IntegerField(default=0)
+    modified_count = models.IntegerField(default=0)
+    removed_count = models.IntegerField(default=0)
