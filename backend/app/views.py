@@ -274,12 +274,12 @@ def force_transaction_sync(request):
     print('Sync jobs queued for user:', request.user.id)
     return Response(status=status.HTTP_202_ACCEPTED)
 
-def sync_item(plaid_item, job):
+def sync_item(plaid_item, job, attempt):
     """Sync one Item from Plaid, page by page. Called by the worker's run_job.
 
     Raises on any failure (plaid.ApiException for Plaid errors) so run_job can
-    record it on the job. Updates job.step as it goes and accumulates counts on
-    the job object; run_job is responsible for the final save.
+    record it. Saves attempt.step before each phase, so a failure shows where it
+    happened. Accumulates counts on the job object; run_job does the final save.
 
     Known gaps, fixed in later milestones:
     - Pages are not written atomically with the cursor, and writes are not
@@ -289,16 +289,16 @@ def sync_item(plaid_item, job):
     """
     user = plaid_item.user
     while True:
-        job.step = SyncJob.Step.FETCH_TRANSACTIONS
-        job.save(update_fields=['step'])
+        attempt.step = SyncJob.Step.FETCH_TRANSACTIONS
+        attempt.save(update_fields=['step'])
 
         request_params = {'access_token': plaid_item.access_token}
         if plaid_item.cursor:
             request_params['cursor'] = plaid_item.cursor
         response = client.transactions_sync(TransactionsSyncRequest(**request_params)).to_dict()
 
-        job.step = SyncJob.Step.UPDATE_DB
-        job.save(update_fields=['step'])
+        attempt.step = SyncJob.Step.UPDATE_DB
+        attempt.save(update_fields=['step'])
 
         db.update_accounts(user, plaid_item, response['accounts'])
         db.update_transactions(user, response)

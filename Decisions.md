@@ -175,3 +175,83 @@ Architecture decisions for the Plaid sync pipeline. Each entry records what was 
 **Why:** The worker can be stopped, restarted, or killed independently of the API, which the fault-injection exercise needs. `docker compose up --scale worker=2` gives multiple workers for the race test. No process supervisor is needed inside a container.
 
 **Tradeoffs accepted:** One more service to run. Backend and worker are built separately and can drift if only one is rebuilt.
+
+---
+
+## 010. Retry policy: allowlist of transient errors
+
+**Date:** 2026-10-11
+
+**Context:** Some sync failures resolve on their own (rate limits, bank outages, network blips); others never will (expired login, our own bugs). Retrying a permanent error wastes calls and can make things worse.
+
+**Options considered:**
+- Denylist: retry everything except known-permanent errors
+- Allowlist: retry only known-transient errors; everything else fails immediately
+
+**Chosen:** Allowlist.
+
+**Why:** An error that has never been seen before should not be retried blindly. Bugs in our own code surface on the first failure instead of after every retry is exhausted. Unknown errors are still recorded with their code, so a transient one can be added to the list once it is understood.
+
+**Retryable:** `RATE_LIMIT_EXCEEDED`, `INSTITUTION_DOWN`, `INSTITUTION_NOT_RESPONDING`, `INTERNAL_SERVER_ERROR`, `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION`, and network-level failures (timeouts, dropped connections), which arrive as Python exception types rather than Plaid error codes.
+
+**Not retryable:** `ITEM_LOGIN_REQUIRED`, `INVALID_ACCESS_TOKEN`, bugs in our code, and deterministic database errors such as constraint violations.
+
+**Tradeoffs accepted:** A transient error not on the list fails permanently the first time it appears. Retrying `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` currently resumes from the last committed cursor, while Plaid says to restart from the cursor before the first page; per-page commits make that impossible until milestone 4.
+
+---
+
+## 011. Retries re-queue the same job; each attempt gets its own row
+
+**Date:** 2026-10-11
+
+**Context:** A retried job needs a representation that keeps a stable identity for the sync while preserving what happened on each attempt.
+
+**Options considered:**
+- A new `SyncJob` row per attempt, linked to the previous one
+- One `SyncJob` per sync plus a `SyncAttempt` row per attempt
+- Re-queue the same `SyncJob` row and overwrite its error each time
+
+**Chosen:** One `SyncJob` per sync, re-queued on retry, plus a `SyncAttempt` row per attempt.
+
+**Why:** The job keeps one ID for its whole life, so the status endpoint follows a single row, and the job stays active between attempts, so the one-active-job constraint (008) keeps working unchanged. Every attempt's timing, step, and error is preserved instead of being overwritten, which matters for debugging and for the fault-injection write-up.
+
+**Ownership, to avoid two sources of truth:** each `SyncAttempt` owns its own timing, step, outcome, and error. The `SyncJob` owns the overall status, the current attempt number, and the final outcome.
+
+**Tradeoffs accepted:** A second model and an extra write per attempt. Job and attempt rows must be updated consistently.
+
+---
+
+## 012. Retry delay enforced by a `run_after` time on the job
+
+**Date:** 2026-10-11
+
+**Context:** A retried job must not run again until its backoff delay has passed.
+
+**Options considered:**
+- The worker sleeps in-process for the delay, then retries
+- A `run_after` field on the job; the claim query skips jobs whose time has not come
+
+**Chosen:** `run_after`.
+
+**Why:** A scheduled retry is stored in the database, so it survives a worker restart. The worker stays free to run other jobs while one waits.
+
+**Tradeoffs accepted:** A migration and a change to the claim query. While a job waits for its retry it is still `queued`, so it counts as active, and a manual sync during the wait returns the waiting job instead of syncing immediately.
+
+---
+
+## 013. Backoff parameters
+
+**Date:** 2026-10-11
+
+**Chosen:**
+- Base delay: 15 seconds
+- Multiplier: 2x per attempt
+- Maximum delay: 10 minutes (a safety cap; not reached with the current attempt limit)
+- Maximum attempts: 7
+- Jitter: +/-20% on each delay
+
+**Resulting schedule:** waits of about 15s, 30s, 1m, 2m, 4m, 8m between attempts, so a job that keeps hitting retryable errors fails permanently after roughly 16 minutes (13 to 19 minutes with jitter).
+
+**Why:** Plaid rate limits and bank outages typically clear within minutes, which this window covers without retrying for an hour. Jitter exists to keep many clients from retrying in lockstep; with one user and 4 Items that problem barely exists here, so +/-20% was chosen over full jitter to keep delays predictable in logs and tests while still demonstrating the technique.
+
+**Tradeoffs accepted:** An outage longer than about 16 minutes fails the job; the next manual or scheduled sync picks it up. A job waiting on a retry blocks new syncs for its Item for up to that long (see 012).

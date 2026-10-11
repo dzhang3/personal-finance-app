@@ -108,10 +108,12 @@ class SyncJob(models.Model):
     error_code = models.CharField(max_length=100, blank=True, null=True)
     error_message = models.TextField(blank=True, null=True)
     attempt_number = models.IntegerField(default=1)
-    step = models.CharField(max_length=50, choices=Step.choices, default=None, null=True)
+    # step moved to SyncAttempt (decision 011): it describes one attempt, not the whole job.
     added_count = models.IntegerField(default=0)
     modified_count = models.IntegerField(default=0)
     removed_count = models.IntegerField(default=0)
+    # Decision 012: a queued job is not claimable before this time. Null means "now".
+    run_after = models.DateTimeField(null=True, blank=True)
 
     ACTIVE_STATUSES = (Status.QUEUED, Status.IN_PROGRESS)
 
@@ -123,4 +125,31 @@ class SyncJob(models.Model):
                 condition=models.Q(status__in=['queued', 'in_progress']),
                 name='one_active_job_per_item',
             ),
+        ]
+
+
+class SyncAttempt(models.Model):
+    """One execution of a SyncJob (decision 011).
+
+    The attempt row owns per-attempt details (timing, step, error). The SyncJob
+    row owns the overall lifecycle and final outcome.
+    """
+    class Outcome(models.TextChoices):
+        COMPLETED = 'completed', 'Completed'
+        RETRY_SCHEDULED = 'retry_scheduled', 'Failed, retry scheduled'
+        FAILED = 'failed', 'Failed permanently'
+
+    job = models.ForeignKey(SyncJob, on_delete=models.CASCADE, related_name='attempts')
+    attempt_number = models.IntegerField()
+    started_at = models.DateTimeField()
+    finished_at = models.DateTimeField(null=True, blank=True)
+    # Null while the attempt is still running (or if the worker died mid-attempt).
+    outcome = models.CharField(max_length=20, choices=Outcome.choices, null=True, blank=True)
+    step = models.CharField(max_length=50, choices=SyncJob.Step.choices, null=True, blank=True)
+    error_code = models.CharField(max_length=100, blank=True, null=True)
+    error_message = models.TextField(blank=True, null=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['job', 'attempt_number'], name='unique_attempt_number_per_job'),
         ]
