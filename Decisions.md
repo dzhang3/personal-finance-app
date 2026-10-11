@@ -114,6 +114,64 @@ Architecture decisions for the Plaid sync pipeline. Each entry records what was 
 - `attempt_number`: which attempt this is
 - Counts of added, modified, and removed transactions
 
+**Counts on failure (added 2026-10-11):** a failed job still records the added/modified/removed counts from pages that committed before the failure, so the row shows what the sync actually accomplished, not only what successful syncs accomplished.
+
 **Considered and left out for now:** what triggered the job (manual or scheduled). All syncs currently go through the same path, so it adds nothing yet. It becomes relevant once scheduled syncs exist and is cheap to add later.
 
 **Why status and step are separate:** A paginated sync loops through fetch and write many times. As statuses, those would flip back and forth constantly; as a separate step field, they record where a job was without muddying its lifecycle.
+
+---
+
+## 007. Worker: a hand-written polling loop
+
+**Date:** 2026-10-10
+
+**Context:** Something has to claim queued `SyncJob` rows and run them in the background.
+
+**Options considered:**
+- A library with its own Postgres-backed queue (e.g. Procrastinate)
+- A hand-written polling loop as a Django management command, claiming jobs with `SELECT ... FOR UPDATE SKIP LOCKED`
+- Django's built-in tasks framework (Django 6.0+, plus a separate database backend package)
+
+**Chosen:** Hand-written polling loop (`manage.py run_worker`).
+
+**Why:** It uses the `SyncJob` table as the queue exactly as decision 004 describes, so no earlier decision changes. Both library options keep their own job tables, which would turn `SyncJob` back into a record and reintroduce two sources of truth. Every line of the claim and run logic is explainable.
+
+**Tradeoffs accepted:** More code to own than a library: polling interval, graceful shutdown, and crash recovery are all hand-built. Polling adds up to one poll interval of latency before a job starts (no `LISTEN/NOTIFY` wake-up). The worker does not auto-reload on code changes like `runserver`; it must be restarted.
+
+---
+
+## 008. One active job per Item, enforced by a partial unique constraint
+
+**Date:** 2026-10-10
+
+**Context:** Two syncs for the same Item at once would race on the same cursor (see 003). Something has to prevent two active jobs per Item.
+
+**Options considered:**
+- Allow duplicate queued jobs; have the claim query skip Items that already have a job in progress
+- Partial unique constraint: at most one row per Item where status is `queued` or `in_progress`
+- Check in application code before creating a job
+
+**Chosen:** Partial unique constraint (`one_active_job_per_item`).
+
+**Why:** The database enforces the rule, so it holds even for two simultaneous requests and for any future code path that creates jobs. It keeps the job table as both the queue and the enforcer. The application-code check has a check-then-act race; the claim-time option still runs redundant syncs.
+
+**Tradeoffs accepted:** Enqueue code must catch the constraint violation (inside a savepoint) and return the existing job. A sync requested while one is running is absorbed by the running job rather than queued after it, so changes that land mid-sync wait for the next sync.
+
+---
+
+## 009. Worker runs as its own Compose service
+
+**Date:** 2026-10-10
+
+**Context:** The worker process has to run somewhere alongside the API.
+
+**Options considered:**
+- Inside the existing backend container, alongside `runserver`
+- As a separate Compose service built from the same image
+
+**Chosen:** Separate `worker` service.
+
+**Why:** The worker can be stopped, restarted, or killed independently of the API, which the fault-injection exercise needs. `docker compose up --scale worker=2` gives multiple workers for the race test. No process supervisor is needed inside a container.
+
+**Tradeoffs accepted:** One more service to run. Backend and worker are built separately and can drift if only one is rebuilt.

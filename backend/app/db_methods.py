@@ -10,26 +10,19 @@ from django.utils.dateparse import parse_datetime
 
 from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending, PlaidItem
 
-def update_accounts(user, access_token, accounts):
+def update_accounts(user, plaid_item, accounts):
     for acc in accounts:
-        if (acc['type'] != 'credit' or acc['type'] != 'loan'):
-            Account.objects.update_or_create(
-                user=user,
-                account_id=acc['account_id'],
-                access_token=access_token,
-                name=acc['name'],
-                defaults={
-                    'account_type': acc['type'],
-                    'balance': acc['balances']['current'],
-                    'institution': acc.get('institution_name', 'Unknown'),
-                },
-            )
-
-def update_cursor(user, access_token, cursor):
-    # Stopgap: looks the Item up by access token until callers pass a PlaidItem directly.
-    updated = PlaidItem.objects.filter(user=user, access_token=access_token).update(cursor=cursor)
-    if updated == 0:
-        raise ValueError("No PlaidItem found for this access token; cursor not saved")
+        Account.objects.update_or_create(
+            user=user,
+            account_id=acc['account_id'],
+            plaid_item=plaid_item,
+            defaults={
+                'account_type': acc['type'],
+                'balance': acc['balances']['current'],
+                'institution': acc.get('institution_name', 'Unknown'),
+                'name': acc['name'],
+            }
+        )
 
 def update_transactions(user, transactions):
     # Initialize accounts dictionary for caching Account objects
@@ -93,7 +86,7 @@ def add_transactions(transactions_data, accounts, user):
         return True
     except Exception as e:
         print(f"Error adding transactions: {str(e)}")
-        return False
+        raise
 
 def modify_transactions(transactions_data, accounts, user):
     """Modify existing transactions in the database."""
@@ -140,17 +133,8 @@ def modify_transactions(transactions_data, accounts, user):
         return True
     except Exception as e:
         print(f"Error modifying transactions: {str(e)}")
-        return False
+        raise
 
 def remove_transactions(transactions):
     print('removing transactions')
     Transaction.objects.filter(transaction_id__in=transactions).delete()
-
-def get_cursor(access_token):
-    # Stopgap: looks the Item up by access token until callers pass a PlaidItem directly.
-    # Returns None if the Item has no cursor yet (first sync) or doesn't exist.
-    return (
-        PlaidItem.objects.filter(access_token=access_token)
-        .values_list('cursor', flat=True)
-        .first()
-    )

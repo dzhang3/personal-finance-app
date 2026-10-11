@@ -31,6 +31,19 @@ services:
     volumes:
       - ./backend:/app
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python manage.py run_worker
+    environment:
+      <<: *COMMON_ENV_VARS
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+
   web:
     build:
       context: ./frontend/web

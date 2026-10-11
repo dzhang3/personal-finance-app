@@ -8,7 +8,7 @@ import uuid
 import traceback
 import logging
 
-from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending
+from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending, PlaidItem, SyncJob
 
 from django.shortcuts import render
 from django.http import JsonResponse
@@ -21,6 +21,7 @@ from django.middleware.csrf import get_token
 from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import status
 from django.forms.models import model_to_dict
+from django.db import transaction
 
 from dotenv import load_dotenv
 import plaid
@@ -46,6 +47,7 @@ from plaid.model.liabilities_get_request import LiabilitiesGetRequest
 from plaid.api import plaid_api
 
 import app.db_methods as db
+from app.jobs import enqueue_sync
 
 load_dotenv()
 
@@ -191,7 +193,6 @@ def create_link_token(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def exchange_public_token(request):
-    global access_token
     public_token = request.data.get('public_token')
     
     if not public_token:
@@ -208,12 +209,18 @@ def exchange_public_token(request):
         exchange_response = exchange_response if isinstance(exchange_response, dict) else exchange_response.to_dict()
 
         access_token = exchange_response['access_token']
-        print('access_token: %s' % access_token)        
-        # Add a delay to allow Plaid to gather transaction data
-        time.sleep(30)  # 30 second delay
+        item_id = exchange_response['item_id']
+
+        with transaction.atomic():
+            plaid_item = PlaidItem.objects.create(
+                user=request.user,
+                item_id=item_id,
+                access_token=access_token
+            )
+    
+            enqueue_sync(plaid_item)
         
-        update_transactions_and_accounts_for_access_token(access_token, request.user)
-        return JsonResponse(exchange_response)
+        return Response(status=status.HTTP_202_ACCEPTED)
     except plaid.ApiException as e:
         return JsonResponse(json.loads(e.body), status=500)
     except Exception as e:
@@ -260,101 +267,52 @@ def get_transactions(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def force_transaction_sync(request):
-    # get accounts associated to user
-    accounts = Account.objects.filter(user=request.user)
-    if len(accounts) == 0:
-        print('No accounts found for user')
-        return JsonResponse({
-            'error': 'No accounts found for user',
-            'transactions': []
-        })
-    # get unique access tokens from accounts
-    for acc in accounts:
-        print('account:', model_to_dict(acc))
-    access_tokens = set([acc.access_token for acc in accounts])
-    for access_token in access_tokens:
-        update_transactions_and_accounts_for_access_token(access_token, request.user)
-    print('Transactions synced for all accounts')
-    return JsonResponse({
-        'success': True
-    })
+    plaid_items = PlaidItem.objects.filter(user=request.user)
+    for plaid_item in plaid_items:
+        enqueue_sync(plaid_item)
 
-def update_transactions_and_accounts_for_access_token(access_token, user):
-    try:
-        while True:
-            try:
-                response = send_transaction_request(access_token)
-                if 'error' in response:
-                    print('Error in transaction sync:', response['error'])
-                    return False
-                accounts = response['accounts']
+    print('Sync jobs queued for user:', request.user.id)
+    return Response(status=status.HTTP_202_ACCEPTED)
 
-                print('updating accounts')
-                db.update_accounts(user, access_token, accounts)
-                
-                print('updating cursor')
-                db.update_cursor(user, access_token, response['next_cursor'])
-                
-                print('updating transactions')
-                db.update_transactions(user, response)
+def sync_item(plaid_item, job):
+    """Sync one Item from Plaid, page by page. Called by the worker's run_job.
 
-                if response['has_more'] == False:
-                    print('No more transactions to sync')
-                    break
-            except Exception as e:
-                print('Error in transaction sync:', str(e))
-                error_response = json.loads(e.body)
-                if error_response.get('error_code') == 'TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION':
-                    print("trying again")
-                    time.sleep(5)
-                    continue
-                else:
-                    print('Error details:', error_response)
-                    break
-        
-    except Exception as e:
-        print('Error processing access token:', str(e))
-        print('Error details:', e.__class__.__name__)
-        traceback.print_exc()
-        return False
-    return True
+    Raises on any failure (plaid.ApiException for Plaid errors) so run_job can
+    record it on the job. Updates job.step as it goes and accumulates counts on
+    the job object; run_job is responsible for the final save.
 
-def update_transactions_and_accounts_for_user(user):
-    # get accounts associated to user
-    accounts = Account.objects.filter(user=user)
-    
-    # If no accounts exist yet, we'll return True since accounts were just created in exchange_public_token
-    # if len(accounts) == 0:
-    #     return True
-        
-    # get unique access tokens from accounts
-    access_tokens = set([acc.access_token for acc in accounts])
-    
-    success = True
-    # get transactions for each account and combine into json list
-    for access_token in access_tokens:
-        success = success and update_transactions_and_accounts_for_access_token(access_token)
+    Known gaps, fixed in later milestones:
+    - Pages are not written atomically with the cursor, and writes are not
+      idempotent yet (milestone 4).
+    - TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION is not handled; it fails the
+      job (milestones 3 and 4).
+    """
+    user = plaid_item.user
+    while True:
+        job.step = SyncJob.Step.FETCH_TRANSACTIONS
+        job.save(update_fields=['step'])
 
-    return success
+        request_params = {'access_token': plaid_item.access_token}
+        if plaid_item.cursor:
+            request_params['cursor'] = plaid_item.cursor
+        response = client.transactions_sync(TransactionsSyncRequest(**request_params)).to_dict()
 
-def send_transaction_request(access_token):
-    try:
-        cursor = db.get_cursor(access_token=access_token)
-        request_params = {
-            'access_token': access_token,
-        }
-        if cursor is not None:
-            request_params['cursor'] = cursor
-            
-        request = TransactionsSyncRequest(**request_params)
-        response = client.transactions_sync(request)
-        response_dict = response.to_dict()
-        print("Raw Plaid response:", str(response_dict))
-        return response_dict
-    except plaid.ApiException as e:
-        error_response = json.loads(e.body)
-        print("Plaid API error:", str(error_response))
-        return error_response
+        job.step = SyncJob.Step.UPDATE_DB
+        job.save(update_fields=['step'])
+
+        db.update_accounts(user, plaid_item, response['accounts'])
+        db.update_transactions(user, response)
+
+        # Advance the cursor only after this page's writes succeeded.
+        plaid_item.cursor = response['next_cursor']
+        plaid_item.save(update_fields=['cursor'])
+
+        job.added_count += len(response['added'])
+        job.modified_count += len(response['modified'])
+        job.removed_count += len(response['removed'])
+
+        if not response['has_more']:
+            return
     
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

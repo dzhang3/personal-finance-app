@@ -73,9 +73,6 @@ export const exchangePublicToken = async (publicToken: string) => {
         // Handle errors if the request fails (e.g., 4xx or 5xx response)
         throw new Error('Failed to exchange public token');
     }
-    
-    const data = await response.json();
-    return data;
 }
 
 export const checkUserExists = async () => {

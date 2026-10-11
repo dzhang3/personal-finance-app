@@ -112,3 +112,15 @@ class SyncJob(models.Model):
     added_count = models.IntegerField(default=0)
     modified_count = models.IntegerField(default=0)
     removed_count = models.IntegerField(default=0)
+
+    ACTIVE_STATUSES = (Status.QUEUED, Status.IN_PROGRESS)
+
+    class Meta:
+        constraints = [
+            # Decision 008: at most one queued or in-progress job per Item, enforced by Postgres.
+            models.UniqueConstraint(
+                fields=['plaid_item'],
+                condition=models.Q(status__in=['queued', 'in_progress']),
+                name='one_active_job_per_item',
+            ),
+        ]
