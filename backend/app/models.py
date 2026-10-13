@@ -41,12 +41,14 @@ class Account(models.Model):
     institution = models.CharField(max_length=255, blank=True, null=True)
 
 class Transaction(models.Model):
-    transaction_id = models.CharField(max_length=255)
+    # Decision 014: Plaid's transaction_id is the idempotency key.
+    transaction_id = models.CharField(max_length=255, unique=True)
     account = models.ForeignKey(Account, on_delete=models.CASCADE)
     datetime = models.DateTimeField()
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     description = models.TextField(blank=True, null=True)
-    transaction_type = models.CharField(max_length=10,)
+    # Plaid's personal_finance_category.primary, e.g. GENERAL_MERCHANDISE (19 chars).
+    transaction_type = models.CharField(max_length=50)
     created_at = models.DateTimeField(auto_now_add=True)
     merchant_id = models.CharField(max_length=255, blank=True, null=True)
     merchant_name = models.CharField(max_length=255, blank=True, null=True)

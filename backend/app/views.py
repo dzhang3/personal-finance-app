@@ -281,21 +281,22 @@ def sync_item(plaid_item, job, attempt):
     record it. Saves attempt.step before each phase, so a failure shows where it
     happened. Accumulates counts on the job object; run_job does the final save.
 
-    Known gaps, fixed in later milestones:
-    - Pages are not written atomically with the cursor, and writes are not
-      idempotent yet (milestone 4).
-    - TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION is not handled; it fails the
-      job (milestones 3 and 4).
+    Each page's data is upserted as it arrives, but the cursor is saved only
+    after the last page (decision 016). Any failure therefore restarts from the
+    original cursor on retry, and replayed pages are absorbed by the upsert.
     """
     user = plaid_item.user
+    cursor = plaid_item.cursor
     while True:
         attempt.step = SyncJob.Step.FETCH_TRANSACTIONS
         attempt.save(update_fields=['step'])
 
         request_params = {'access_token': plaid_item.access_token}
-        if plaid_item.cursor:
-            request_params['cursor'] = plaid_item.cursor
+        if cursor:
+            request_params['cursor'] = cursor
         response = client.transactions_sync(TransactionsSyncRequest(**request_params)).to_dict()
+
+        cursor = response['next_cursor']
 
         attempt.step = SyncJob.Step.UPDATE_DB
         attempt.save(update_fields=['step'])
@@ -303,16 +304,15 @@ def sync_item(plaid_item, job, attempt):
         db.update_accounts(user, plaid_item, response['accounts'])
         db.update_transactions(user, response)
 
-        # Advance the cursor only after this page's writes succeeded.
-        plaid_item.cursor = response['next_cursor']
-        plaid_item.save(update_fields=['cursor'])
-
         job.added_count += len(response['added'])
         job.modified_count += len(response['modified'])
         job.removed_count += len(response['removed'])
 
         if not response['has_more']:
-            return
+            break
+    # Advance the cursor only after every page's writes succeeded (decision 016).
+    plaid_item.cursor = cursor
+    plaid_item.save(update_fields=['cursor'])
     
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

@@ -38,7 +38,13 @@ class Command(BaseCommand):
 
             self.stdout.write(f"Claimed job {job.id} for item {job.plaid_item_id}")
             run_job(job)
-            self.stdout.write(f"Finished job {job.id}")
+            job.refresh_from_db(fields=["status", "error_code", "attempt_number"])
+            if job.status == job.Status.FAILED:
+                self.stdout.write(f"Job {job.id} failed: {job.error_code}")
+            elif job.status == job.Status.QUEUED:
+                self.stdout.write(f"Job {job.id} retry scheduled (attempt {job.attempt_number})")
+            else:
+                self.stdout.write(f"Job {job.id} completed")
 
         self.stdout.write("Worker stopped")
 

@@ -27,28 +27,26 @@ def update_accounts(user, plaid_item, accounts):
 def update_transactions(user, transactions):
     # Initialize accounts dictionary for caching Account objects
     accounts = {}
-    add_transactions(transactions['added'], accounts, user)
-    modify_transactions(transactions['modified'], accounts, user)
+    upsert_transactions(transactions['added'], accounts, user)
+    upsert_transactions(transactions['modified'], accounts, user)
     remove_transactions([r['transaction_id'] for r in transactions['removed']])
     
 def get_account_transactions(account, start_date, end_date):
     return Transaction.objects.filter(account=account, datetime__gte=start_date, datetime__lte=end_date).order_by('datetime')
 
-def add_transactions(transactions_data, accounts, user):
-    """Add new transactions to the database."""
+def upsert_transactions(transactions_data, accounts, user):
+    """Insert new transactions or overwrite existing ones, keyed on transaction_id (decisions 014, 015)."""
     try:
-        # Filter out non-expense transactions (only keep positive amounts)
-        expense_transactions = [t for t in transactions_data if t.get('amount', 0) > 0]
         
         # Get any account IDs we don't have cached yet
-        missing_account_ids = {t['account_id'] for t in expense_transactions} - accounts.keys()
+        missing_account_ids = {t['account_id'] for t in transactions_data} - accounts.keys()
         if missing_account_ids:
             new_accounts = Account.objects.filter(account_id__in=missing_account_ids)
             # Update our accounts cache with the new accounts
             accounts.update({acc.account_id: acc for acc in new_accounts})
         
         transactions = []
-        for transaction in expense_transactions:
+        for transaction in transactions_data:
             # Get the account object from our mapping
             account = accounts.get(transaction['account_id'])
             if not account:
@@ -72,68 +70,22 @@ def add_transactions(transactions_data, accounts, user):
                 transaction_id=transaction['transaction_id'],
                 account=account,
                 amount=transaction['amount'],
-                description=transaction.get('description', ''),
+                description=transaction.get('name', ''),
                 merchant_name=transaction.get('merchant_name'),
                 datetime=transaction_datetime,
-                transaction_type=transaction.get('personal_finance_category', 'UNCATEGORIZED').get('primary', 'UNCATEGORIZED'),
+                transaction_type=(transaction.get('personal_finance_category') or {}).get('primary', 'UNCATEGORIZED'),
                 payment_channel=transaction.get('payment_channel', 'OTHER')
             )
             transactions.append(transaction_obj)
 
         # Bulk create transactions
-        print(f"Adding {len(transactions)} transactions")
-        Transaction.objects.bulk_create(transactions)
+        print(f"Upserting {len(transactions)} transactions")
+        Transaction.objects.bulk_create(transactions, update_conflicts=True, unique_fields=['transaction_id'], update_fields=['account', 'amount', 'description', 'merchant_name', 'datetime', 'transaction_type', 'payment_channel'])
         return True
     except Exception as e:
-        print(f"Error adding transactions: {str(e)}")
+        print(f"Error upserting transactions: {str(e)}")
         raise
 
-def modify_transactions(transactions_data, accounts, user):
-    """Modify existing transactions in the database."""
-    try:
-        # Filter out non-expense transactions (only keep positive amounts)
-        expense_transactions = [t for t in transactions_data if t.get('amount', 0) > 0]
-        
-        # Get any account IDs we don't have cached yet
-        missing_account_ids = {t['account_id'] for t in expense_transactions} - accounts.keys()
-        if missing_account_ids:
-            new_accounts = Account.objects.filter(account_id__in=missing_account_ids)
-            # Update our accounts cache with the new accounts
-            accounts.update({acc.account_id: acc for acc in new_accounts})
-        
-        for transaction in expense_transactions:
-            account = accounts.get(transaction['account_id'])
-            if not account:
-                print(f"Account not found for transaction {transaction['transaction_id']}")
-                continue
-                
-            # Handle datetime with proper timezone awareness
-            if transaction.get('datetime') is None:
-                # Convert date to datetime at midnight in the current timezone
-                date_obj = transaction['date']
-                if isinstance(date_obj, str):
-                    date_obj = datetime.strptime(date_obj, '%Y-%m-%d').date()
-                transaction_datetime = timezone.make_aware(datetime.combine(date_obj, datetime.min.time()))
-            else:
-                # Parse datetime string and ensure it's timezone aware
-                dt_obj = parse_datetime(transaction['datetime'])
-                transaction_datetime = timezone.make_aware(dt_obj) if timezone.is_naive(dt_obj) else dt_obj
-                
-            Transaction.objects.filter(
-                transaction_id=transaction['transaction_id']
-            ).update(
-                account=account,
-                amount=transaction['amount'],
-                description=transaction.get('description', ''),
-                merchant_name=transaction.get('merchant_name'),
-                datetime=transaction_datetime,
-                transaction_type=transaction.get('personal_finance_category', 'UNCATEGORIZED').get('primary', 'UNCATEGORIZED'),
-                payment_channel=transaction.get('payment_channel', 'OTHER')
-            )
-        return True
-    except Exception as e:
-        print(f"Error modifying transactions: {str(e)}")
-        raise
 
 def remove_transactions(transactions):
     print('removing transactions')

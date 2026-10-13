@@ -255,3 +255,77 @@ Architecture decisions for the Plaid sync pipeline. Each entry records what was 
 **Why:** Plaid rate limits and bank outages typically clear within minutes, which this window covers without retrying for an hour. Jitter exists to keep many clients from retrying in lockstep; with one user and 4 Items that problem barely exists here, so +/-20% was chosen over full jitter to keep delays predictable in logs and tests while still demonstrating the technique.
 
 **Tradeoffs accepted:** An outage longer than about 16 minutes fails the job; the next manual or scheduled sync picks it up. A job waiting on a retry blocks new syncs for its Item for up to that long (see 012).
+
+---
+
+## 014. Idempotency key: Plaid's `transaction_id`, unique across the table
+
+**Date:** 2026-10-12
+
+**Context:** The pipeline is at-least-once: retries and restarts can deliver the same Plaid page more than once. Writes must be idempotent, which needs a key that identifies "the same transaction."
+
+**Options considered:**
+- `(account, transaction_id)` unique together
+- A content fingerprint (hash of date, amount, merchant, account)
+- `transaction_id` alone, unique across the table
+
+**Chosen:** `transaction_id` alone.
+
+**Why:** Plaid documents it as the unique ID of the transaction. If that were ever wrong, the failure is loud: the unique constraint rejects the write and the job fails visibly, instead of two transactions being silently merged. A content fingerprint would collapse genuinely separate purchases (same merchant, amount, and day) and would not match a pending charge whose amount changes when it posts.
+
+**Tradeoffs accepted:** Fully trusts an external system's ID (a natural key). Relinking the same bank produces new IDs, so that case remains a semantic duplicate for reconciliation (milestone 5), not something this key can catch.
+
+---
+
+## 015. Upserts via `INSERT ... ON CONFLICT DO UPDATE`
+
+**Date:** 2026-10-12
+
+**Options considered:**
+- Delete the page's IDs, then insert fresh
+- `bulk_create(update_conflicts=True, ...)`: one `INSERT ... ON CONFLICT DO UPDATE` per page
+- `update_or_create` per row
+
+**Chosen:** `bulk_create(update_conflicts=True, ...)`.
+
+**Why:** One atomic statement per page, with the database deciding "new or existing," so there is no read-then-write race and no per-row query cost. Row identity (`id`, `created_at`) is preserved across syncs, unlike delete-and-insert.
+
+**Tradeoffs accepted:** Requires the unique constraint from 014 and is Postgres-specific in its semantics. Applying Plaid's `modified` data overwrites manual edits made through `edit_transaction`. Accepted: Plaid's later data is treated as the newer and more correct version. If manual edits ever need to survive, they belong in separate override fields that the upsert never touches.
+
+---
+
+## 016. Cursor saved only after the whole sync succeeds
+
+**Date:** 2026-10-12
+
+**Context:** A sync spans several pages. On `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION`, Plaid requires restarting from the cursor held before the first page.
+
+**Options considered:**
+- Buffer every page in memory and commit everything once at the end
+- Commit each page's data as it arrives, but save the cursor only after the last page
+- Commit each page together with its cursor
+
+**Chosen:** Commit each page's data; save the cursor only at the end.
+
+**Why:** The cursor never advances until the whole sync succeeds, so every retry, for any reason, automatically restarts from the correct original cursor with no special restart logic, which is exactly what Plaid requires after a mutation-during-pagination error. Pages already written are replayed on retry and absorbed by the idempotent upserts (014, 015). Memory stays bounded to one page.
+
+**Tradeoffs accepted:** Any failure re-fetches every page, not just the remaining ones. Correctness depends entirely on the upserts being idempotent, which the tests must prove.
+
+---
+
+## 017. Store every transaction with Plaid's sign; interpret at display time
+
+**Date:** 2026-10-12
+
+**Context:** The old sync dropped every transaction with `amount <= 0`. In Plaid's convention, positive means money out, so this discarded income, card payments, and refunds.
+
+**Options considered:**
+- Store only spending (`amount > 0`), as before
+- Store income and spending in separate tables or with a direction flag
+- Store everything as Plaid sends it, signed, and filter by category when displaying
+
+**Chosen:** Store everything, signed.
+
+**Why:** The sync layer should mirror Plaid faithfully; deciding what counts as spending is a reporting concern. Filtering at ingest also broke correctness on credit cards alone: refunds are negative, so dropping them overstated spending, and it made reconciliation (milestone 5) impossible because the local table could never match Plaid's.
+
+**Tradeoffs accepted:** Spending totals must exclude card payments and transfers between my own accounts (`TRANSFER_IN`, `TRANSFER_OUT`, `LOAN_PAYMENTS`) or they double-count. Plaid bills per connected Item, not per transaction, so ingest filtering never saved fees; the only fee lever is how many Items are connected.
