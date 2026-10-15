@@ -329,3 +329,88 @@ Architecture decisions for the Plaid sync pipeline. Each entry records what was 
 **Why:** The sync layer should mirror Plaid faithfully; deciding what counts as spending is a reporting concern. Filtering at ingest also broke correctness on credit cards alone: refunds are negative, so dropping them overstated spending, and it made reconciliation (milestone 5) impossible because the local table could never match Plaid's.
 
 **Tradeoffs accepted:** Spending totals must exclude card payments and transfers between my own accounts (`TRANSFER_IN`, `TRANSFER_OUT`, `LOAN_PAYMENTS`) or they double-count. Plaid bills per connected Item, not per transaction, so ingest filtering never saved fees; the only fee lever is how many Items are connected.
+
+---
+
+## 018. Reconcile against `/transactions/get` for a trailing window
+
+**Date:** 2026-10-13
+
+**Context:** The sync path is incremental, and increments drift: dropped changes, bugs, and old filters (017) leave the table different from Plaid's. Reconciliation needs a source to compare against.
+
+**Options considered:**
+- Account balances: compare Plaid's balance with what stored transactions imply
+- A fresh full `/transactions/sync` from an empty cursor, diffed against the table
+- `/transactions/get` for a trailing date window, diffing IDs and compared fields
+
+**Chosen:** `/transactions/get` for a trailing window.
+
+**Why:** It is a different endpoint from the sync path, so a blind spot in how sync delivers or parses data is not shared by the check. It produces exact lists of missing, extra, and mismatched transactions, which repair needs (019); a balance check only says that something is off, and can't even do that reliably because the starting balance, interest, and fees aren't in the table. Cost is zero: `/transactions/get` is covered by the flat Transactions fee ($0.30 per Item per month), unlike Balance ($0.10 per call) or Transactions Refresh ($0.12 per call).
+
+**Tradeoffs accepted:** Drift older than the window isn't seen (021). `/transactions/get` pages by offset, so a transaction arriving mid-fetch can shift pages; the fetch is checked against Plaid's `total_transactions` and fails rather than reconcile against a partial list.
+
+---
+
+## 019. Repair drift automatically, with an audit row per change
+
+**Date:** 2026-10-13
+
+**Options considered:**
+- Repair automatically: insert missing, overwrite mismatched, delete extra
+- Report only: record the diff and let a human decide
+- Repair small drift automatically; above a threshold, record and repair nothing
+
+**Chosen:** Repair automatically. Every change is recorded in `ReconcileRepair` with before and after snapshots, in the same transaction as the change.
+
+**Why:** With one user and a handful of Items, drift is rare and small, and manual review of every diff is effort with no payoff. Plaid is the source of truth for transaction data (015), so its version wins.
+
+**Tradeoffs accepted:** A bug in the diff or an incomplete Plaid response could delete real rows. Mitigations: the fetch fails on a count mismatch (018), and the audit rows make any bad run traceable and reversible by hand. No threshold guard yet; the fault-injection milestone may justify one.
+
+---
+
+## 020. Reconcile as a scheduled job type on the existing queue
+
+**Date:** 2026-10-13
+
+**Options considered:**
+- Its own job type, scheduled daily
+- On demand from an endpoint
+- Right after every successful sync, in the same job
+
+**Chosen:** A `kind` field on `SyncJob` (`sync` or `reconcile`). The worker checks once a minute and queues a reconcile for any Item without one in the last 24 hours.
+
+**Why:** Drift is rare and not urgent, so daily is enough. Running through the same queue reuses claiming, retries, and attempts, and the one-active-job constraint (008) guarantees a reconcile never runs concurrently with a sync on the same Item; a race between them would report false drift and could delete rows the sync just wrote.
+
+**Tradeoffs accepted:** The schedule lives in the worker, so no reconciles happen while it's down. If a sync is active when a reconcile is due, the reconcile waits until the next check.
+
+---
+
+## 021. 30-day reconciliation window
+
+**Date:** 2026-10-13
+
+**Options considered:** 30 days, 90 days, full history.
+
+**Chosen:** 30 days.
+
+**Why:** Covers the period where Plaid still changes transactions (pending to posted, corrections) and where new drift appears, while keeping each run small.
+
+**Tradeoffs accepted:** Older drift is invisible to the daily run, including the transactions the old `amount > 0` filter dropped. `reconcile_item` takes the window as a parameter, so a one-time larger run can backfill those.
+
+---
+
+## 022. Store Plaid's posted `date` separately from the purchase time
+
+**Date:** 2026-10-14
+
+**Context:** `Transaction.datetime` holds when the purchase happened (authorized time, falling back to posted), which is what spending views want. But `/transactions/get` selects its window by the posted `date`. Authorization and posting are usually 1 to 3 days apart, and a timestamp converted to a calendar day depends on the zone chosen. Windowing local rows by `datetime` would put purchases near the window edge on one side only, where auto-repair (019) would delete them as "extra."
+
+**Options considered:**
+- A separate `posted_date` column holding Plaid's `date` exactly, used for the reconcile window
+- No model change: widen the local window by a margin and only treat rows well inside it as extra
+
+**Chosen:** A separate `posted_date` column.
+
+**Why:** Both sides of the comparison filter on the identical value, so the windows match exactly with no tuning. A margin would have to cover the authorization-to-posting gap, which varies by bank, and drift at the edges would never be repaired.
+
+**Tradeoffs accepted:** A migration, and rows written before it have a null `posted_date` until a sync or reconcile rewrites them. The first reconcile after the migration treats those rows as missing and upserts Plaid's version over them, so its audit log shows them as inserts.

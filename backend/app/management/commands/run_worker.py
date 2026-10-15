@@ -4,7 +4,10 @@ import time
 from django.core.management.base import BaseCommand
 from django.db import close_old_connections
 
-from app.jobs import claim_next_job, run_job
+from app.jobs import claim_next_job, enqueue_due_reconciles, run_job
+
+# How often the worker checks whether any Item is due for a reconcile (decision 020).
+RECONCILE_CHECK_SECONDS = 60
 
 
 class Command(BaseCommand):
@@ -27,16 +30,23 @@ class Command(BaseCommand):
         signal.signal(signal.SIGINT, self._request_stop)
 
         self.stdout.write(f"Worker started (poll interval {poll_interval}s)")
+        last_reconcile_check = None
         while not self._stopping:
             # Long-running process: drop DB connections that have gone stale.
             close_old_connections()
+
+            if last_reconcile_check is None or time.monotonic() - last_reconcile_check >= RECONCILE_CHECK_SECONDS:
+                last_reconcile_check = time.monotonic()
+                queued = enqueue_due_reconciles()
+                if queued:
+                    self.stdout.write(f"Queued {queued} reconcile job(s)")
 
             job = claim_next_job()
             if job is None:
                 time.sleep(poll_interval)
                 continue
 
-            self.stdout.write(f"Claimed job {job.id} for item {job.plaid_item_id}")
+            self.stdout.write(f"Claimed {job.kind} job {job.id} for item {job.plaid_item_id}")
             run_job(job)
             job.refresh_from_db(fields=["status", "error_code", "attempt_number"])
             if job.status == job.Status.FAILED:

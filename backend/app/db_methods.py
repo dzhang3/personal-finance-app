@@ -53,18 +53,9 @@ def upsert_transactions(transactions_data, accounts, user):
                 print(f"Account not found for transaction {transaction['transaction_id']}")
                 continue
             
-            # Handle datetime with proper timezone awareness
-            if transaction.get('datetime') is None:
-                # Convert date to datetime at midnight in the current timezone
-                date_obj = transaction['date']
-                if isinstance(date_obj, str):
-                    date_obj = datetime.strptime(date_obj, '%Y-%m-%d').date()
-                transaction_datetime = timezone.make_aware(datetime.combine(date_obj, datetime.min.time()))
-            else:
-                # Parse datetime string and ensure it's timezone aware
-                dt_obj = parse_datetime(transaction['datetime'])
-                transaction_datetime = timezone.make_aware(dt_obj) if timezone.is_naive(dt_obj) else dt_obj
-                
+            transaction_datetime = _purchase_datetime(transaction)
+            posted_date = _as_date(transaction['date'])
+
             # Create transaction object
             transaction_obj = Transaction(
                 transaction_id=transaction['transaction_id'],
@@ -73,6 +64,7 @@ def upsert_transactions(transactions_data, accounts, user):
                 description=transaction.get('name', ''),
                 merchant_name=transaction.get('merchant_name'),
                 datetime=transaction_datetime,
+                posted_date=posted_date,
                 transaction_type=(transaction.get('personal_finance_category') or {}).get('primary', 'UNCATEGORIZED'),
                 payment_channel=transaction.get('payment_channel', 'OTHER')
             )
@@ -80,11 +72,46 @@ def upsert_transactions(transactions_data, accounts, user):
 
         # Bulk create transactions
         print(f"Upserting {len(transactions)} transactions")
-        Transaction.objects.bulk_create(transactions, update_conflicts=True, unique_fields=['transaction_id'], update_fields=['account', 'amount', 'description', 'merchant_name', 'datetime', 'transaction_type', 'payment_channel'])
+        Transaction.objects.bulk_create(transactions, update_conflicts=True, unique_fields=['transaction_id'], update_fields=['account', 'amount', 'description', 'merchant_name', 'datetime', 'posted_date', 'transaction_type', 'payment_channel'])
         return True
     except Exception as e:
         print(f"Error upserting transactions: {str(e)}")
         raise
+
+
+def _as_date(value):
+    """A datetime.date from the SDK's date object or a 'YYYY-MM-DD' string."""
+    if isinstance(value, str):
+        return datetime.strptime(value, '%Y-%m-%d').date()
+    return value
+
+
+def _purchase_datetime(transaction):
+    """When the purchase happened, as an aware datetime.
+
+    Prefers authorization (when the purchase was made) over posting. Each field
+    can be null depending on the institution, so fall back in order:
+    authorized_datetime -> authorized_date -> datetime -> date (always present).
+    Date-only values become midnight in TIME_ZONE.
+    """
+    if transaction.get('authorized_datetime'):
+        return _aware(transaction['authorized_datetime'])
+    if transaction.get('authorized_date'):
+        return _midnight(transaction['authorized_date'])
+    if transaction.get('datetime'):
+        return _aware(transaction['datetime'])
+    return _midnight(transaction['date'])
+
+
+def _aware(dt_obj):
+    # The SDK's .to_dict() gives a datetime object; tests and raw JSON give a string.
+    if isinstance(dt_obj, str):
+        dt_obj = parse_datetime(dt_obj)
+    return timezone.make_aware(dt_obj) if timezone.is_naive(dt_obj) else dt_obj
+
+
+def _midnight(date_value):
+    return timezone.make_aware(datetime.combine(_as_date(date_value), datetime.min.time()))
 
 
 def remove_transactions(transactions):

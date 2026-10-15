@@ -14,6 +14,9 @@ x-environment:
   POSTGRES_USER: ${POSTGRES_USER}
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
   POSTGRES_DB: ${POSTGRES_DB}
+  # Python buffers stdout when it isn't a terminal, so container logs would
+  # show up late or not at all. Unbuffered makes every line appear immediately.
+  PYTHONUNBUFFERED: "1"
 
 
 services:

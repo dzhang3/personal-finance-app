@@ -118,7 +118,8 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'EST'
+# A real zone name, so daylight saving is handled. 'EST' is a fixed UTC-5 offset all year.
+TIME_ZONE = 'America/New_York'
 
 USE_I18N = True
 

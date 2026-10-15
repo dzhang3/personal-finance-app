@@ -12,7 +12,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from app.models import SyncJob, SyncAttempt
+from app.models import PlaidItem, SyncJob, SyncAttempt
 
 from urllib3.exceptions import MaxRetryError, NewConnectionError, ProtocolError, TimeoutError
 
@@ -43,6 +43,9 @@ RETRYABLE_PLAID_ERROR_CODES = {
 #   ProtocolError      -> connection dropped mid-response
 TRANSIENT_NETWORK_ERRORS = (TimeoutError, NewConnectionError, ProtocolError)
 
+# Decision 020: each Item gets a reconcile job at most once per interval.
+RECONCILE_INTERVAL = timedelta(hours=24)
+
 
 def _is_transient_network_error(exc):
     """True if exc is a network failure that a retry could plausibly fix.
@@ -57,7 +60,12 @@ def _is_transient_network_error(exc):
 
 
 def enqueue_sync(plaid_item):
-    """Queue a sync for this Item, or return its existing active job.
+    """Queue a sync for this Item, or return its existing active job."""
+    return enqueue_job(plaid_item, kind=SyncJob.Kind.SYNC)
+
+
+def enqueue_job(plaid_item, kind):
+    """Queue a job of this kind, or return the Item's existing active job (of any kind).
 
     The nested atomic() creates a savepoint. If the INSERT violates the
     one-active-job constraint, only the savepoint rolls back, so a caller's
@@ -65,12 +73,33 @@ def enqueue_sync(plaid_item):
     """
     try:
         with transaction.atomic():
-            return SyncJob.objects.create(plaid_item=plaid_item)
+            return SyncJob.objects.create(plaid_item=plaid_item, kind=kind)
     except IntegrityError:
         return SyncJob.objects.get(
             plaid_item=plaid_item,
             status__in=SyncJob.ACTIVE_STATUSES,
         )
+
+
+def enqueue_due_reconciles(now=None):
+    """Queue a reconcile for every Item without one created in the last RECONCILE_INTERVAL.
+
+    Called periodically by the worker (decision 020). If an Item has a sync
+    active, enqueue_job returns that job instead and nothing is queued; the
+    next check tries again. Returns the number of reconcile jobs queued.
+    """
+    now = now or timezone.now()
+    recently_reconciled = SyncJob.objects.filter(
+        kind=SyncJob.Kind.RECONCILE,
+        created_at__gte=now - RECONCILE_INTERVAL,
+    ).values('plaid_item_id')
+
+    queued = 0
+    for item in PlaidItem.objects.exclude(id__in=recently_reconciled):
+        job = enqueue_job(item, kind=SyncJob.Kind.RECONCILE)
+        if job.kind == SyncJob.Kind.RECONCILE:
+            queued += 1
+    return queued
 
 
 def compute_backoff(attempt_number, rng=random.random):
@@ -127,7 +156,13 @@ def claim_next_job():
 
         job.status = SyncJob.Status.IN_PROGRESS
         job.started_at = now
-        job.save(update_fields=['status', 'started_at'])
+        # Counts describe the latest attempt. A retry replays pages, so carrying
+        # counts over from a failed attempt would double-count them.
+        job.added_count = job.modified_count = job.removed_count = 0
+        job.save(update_fields=[
+            'status', 'started_at',
+            'added_count', 'modified_count', 'removed_count',
+        ])
 
         SyncAttempt.objects.create(
             job=job,
@@ -151,8 +186,13 @@ def run_job(job):
     # claim_next_job creates this row in the same transaction that claims the job.
     attempt = job.attempts.get(attempt_number=job.attempt_number)
     try:
-        from app.views import sync_item
-        sync_item(job.plaid_item, job, attempt)
+        # Lazy imports: app.views imports app.jobs, so importing it at module level would be circular.
+        if job.kind == SyncJob.Kind.RECONCILE:
+            from app.reconcile import reconcile_item
+            reconcile_item(job.plaid_item, job, attempt)
+        else:
+            from app.views import sync_item
+            sync_item(job.plaid_item, job, attempt)
         _record_success(job, attempt)
     except Exception as e:
         error_code, error_message = _describe_error(e)

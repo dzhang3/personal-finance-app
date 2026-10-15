@@ -44,7 +44,12 @@ class Transaction(models.Model):
     # Decision 014: Plaid's transaction_id is the idempotency key.
     transaction_id = models.CharField(max_length=255, unique=True)
     account = models.ForeignKey(Account, on_delete=models.CASCADE)
+    # When the purchase happened: Plaid's authorized datetime/date, falling back to posted.
     datetime = models.DateTimeField()
+    # Decision 022: Plaid's posted `date`, stored as-is. /transactions/get filters
+    # on this field, so reconciliation windows must use it too. Null only for rows
+    # written before this field existed; the first reconcile or sync fills them.
+    posted_date = models.DateField(null=True, blank=True)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     description = models.TextField(blank=True, null=True)
     # Plaid's personal_finance_category.primary, e.g. GENERAL_MERCHANDISE (19 chars).
@@ -101,8 +106,15 @@ class SyncJob(models.Model):
     class Step(models.TextChoices):
         FETCH_TRANSACTIONS = 'fetch_transactions', 'Fetch Transactions'
         UPDATE_DB = 'update_db', 'Update Database'
-    
+
+    class Kind(models.TextChoices):
+        SYNC = 'sync', 'Sync'
+        # Decision 020: reconciliation runs through the same queue, so the
+        # one-active-job constraint keeps it from racing a sync on the same Item.
+        RECONCILE = 'reconcile', 'Reconcile'
+
     plaid_item = models.ForeignKey(PlaidItem, on_delete=models.CASCADE)
+    kind = models.CharField(max_length=20, choices=Kind.choices, default=Kind.SYNC)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.QUEUED)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -111,6 +123,8 @@ class SyncJob(models.Model):
     error_message = models.TextField(blank=True, null=True)
     attempt_number = models.IntegerField(default=1)
     # step moved to SyncAttempt (decision 011): it describes one attempt, not the whole job.
+    # For sync jobs: rows added/modified/removed. For reconcile jobs: rows
+    # inserted/updated/deleted by repairs (see ReconcileRepair).
     added_count = models.IntegerField(default=0)
     modified_count = models.IntegerField(default=0)
     removed_count = models.IntegerField(default=0)
@@ -155,3 +169,23 @@ class SyncAttempt(models.Model):
         constraints = [
             models.UniqueConstraint(fields=['job', 'attempt_number'], name='unique_attempt_number_per_job'),
         ]
+
+
+class ReconcileRepair(models.Model):
+    """One change a reconcile job made to the Transaction table (decision 019).
+
+    Audit trail for auto-repair: if a bad run deletes or overwrites real data,
+    this records exactly what it did and what the row looked like before.
+    """
+    class Action(models.TextChoices):
+        INSERTED = 'inserted', 'Inserted missing transaction'
+        UPDATED = 'updated', 'Updated mismatched transaction'
+        DELETED = 'deleted', 'Deleted extra transaction'
+
+    job = models.ForeignKey(SyncJob, on_delete=models.CASCADE, related_name='repairs')
+    transaction_id = models.CharField(max_length=255)
+    action = models.CharField(max_length=20, choices=Action.choices)
+    # Snapshots of the compared fields. before is null for inserts, after is null for deletes.
+    before = models.JSONField(null=True, blank=True)
+    after = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
