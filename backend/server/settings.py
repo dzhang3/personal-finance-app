@@ -133,6 +133,35 @@ STATIC_URL = 'static/'
 
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
+# Logging (decisions 023-025): logfmt lines to stdout, with job context attached.
+# Our code logs under 'app'; Django and libraries only show warnings and up.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'filters': {
+        'job_context': {'()': 'app.logging_utils.ContextFilter'},
+    },
+    'formatters': {
+        'logfmt': {'()': 'app.logging_utils.LogfmtFormatter'},
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'stream': 'ext://sys.stdout',
+            'filters': ['job_context'],
+            'formatter': 'logfmt',
+        },
+    },
+    'root': {'handlers': ['console'], 'level': 'WARNING'},
+    'loggers': {
+        'app': {
+            'handlers': ['console'],
+            'level': os.getenv('APP_LOG_LEVEL', 'INFO'),
+            'propagate': False,
+        },
+    },
+}
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 

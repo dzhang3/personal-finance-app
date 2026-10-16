@@ -1,10 +1,16 @@
+import logging
+import os
 import signal
+import socket
 import time
 
 from django.core.management.base import BaseCommand
 from django.db import close_old_connections
 
 from app.jobs import claim_next_job, enqueue_due_reconciles, run_job
+from app.logging_utils import job_context, log_event
+
+logger = logging.getLogger("app.worker")
 
 # How often the worker checks whether any Item is due for a reconcile (decision 020).
 RECONCILE_CHECK_SECONDS = 60
@@ -24,12 +30,20 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         poll_interval = options["poll_interval"]
         self._stopping = False
+        self._stop_signal = None
 
         # docker compose stop sends SIGTERM. Finish the current job, then exit.
         signal.signal(signal.SIGTERM, self._request_stop)
         signal.signal(signal.SIGINT, self._request_stop)
 
-        self.stdout.write(f"Worker started (poll interval {poll_interval}s)")
+        # Every line from this process carries the worker's identity, so lines from
+        # two workers (e.g. in a race test) can be told apart.
+        with job_context(worker=f"{socket.gethostname()}:{os.getpid()}"):
+            log_event(logger, "worker_started", poll_interval_s=poll_interval)
+            self._loop(poll_interval)
+            log_event(logger, "worker_stopped", signal=self._stop_signal)
+
+    def _loop(self, poll_interval):
         last_reconcile_check = None
         while not self._stopping:
             # Long-running process: drop DB connections that have gone stale.
@@ -39,25 +53,18 @@ class Command(BaseCommand):
                 last_reconcile_check = time.monotonic()
                 queued = enqueue_due_reconciles()
                 if queued:
-                    self.stdout.write(f"Queued {queued} reconcile job(s)")
+                    log_event(logger, "reconciles_queued", count=queued)
 
             job = claim_next_job()
             if job is None:
                 time.sleep(poll_interval)
                 continue
 
-            self.stdout.write(f"Claimed {job.kind} job {job.id} for item {job.plaid_item_id}")
+            # run_job logs job_started and the outcome, with job context attached.
             run_job(job)
-            job.refresh_from_db(fields=["status", "error_code", "attempt_number"])
-            if job.status == job.Status.FAILED:
-                self.stdout.write(f"Job {job.id} failed: {job.error_code}")
-            elif job.status == job.Status.QUEUED:
-                self.stdout.write(f"Job {job.id} retry scheduled (attempt {job.attempt_number})")
-            else:
-                self.stdout.write(f"Job {job.id} completed")
-
-        self.stdout.write("Worker stopped")
 
     def _request_stop(self, signum, frame):
-        self.stdout.write("Shutdown requested; finishing current job")
+        # No logging here: a signal can interrupt a log call already holding the
+        # handler's lock. Just record it; handle() logs on the way out.
+        self._stop_signal = signal.Signals(signum).name
         self._stopping = True

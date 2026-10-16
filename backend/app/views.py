@@ -46,6 +46,10 @@ from plaid.model.liabilities_get_request import LiabilitiesGetRequest
 
 from plaid.api import plaid_api
 
+import logging
+from app.logging_utils import log_event
+logger = logging.getLogger(__name__)
+
 import app.db_methods as db
 from app.jobs import enqueue_sync
 
@@ -287,14 +291,20 @@ def sync_item(plaid_item, job, attempt):
     """
     user = plaid_item.user
     cursor = plaid_item.cursor
+    page = 1
     while True:
         attempt.step = SyncJob.Step.FETCH_TRANSACTIONS
         attempt.save(update_fields=['step'])
+        log_event(logger, "fetching_transactions", cursor=cursor, page=page, level=logging.DEBUG)
 
         request_params = {'access_token': plaid_item.access_token}
         if cursor:
             request_params['cursor'] = cursor
         response = client.transactions_sync(TransactionsSyncRequest(**request_params)).to_dict()
+
+        log_event(logger, "transactions_fetched", page=page, added=len(response['added']),
+                  modified=len(response['modified']), removed=len(response['removed']),
+                  has_more=response['has_more'])
 
         cursor = response['next_cursor']
 
@@ -310,9 +320,11 @@ def sync_item(plaid_item, job, attempt):
 
         if not response['has_more']:
             break
+        page += 1
     # Advance the cursor only after every page's writes succeeded (decision 016).
     plaid_item.cursor = cursor
     plaid_item.save(update_fields=['cursor'])
+    log_event(logger, "cursor_saved", pages=page)
     
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

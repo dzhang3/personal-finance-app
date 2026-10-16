@@ -5,6 +5,7 @@ enforced by a partial unique constraint (decision 008). Retries re-queue the
 same job; each execution gets a SyncAttempt row (decision 011).
 """
 import json
+import logging
 import random
 from datetime import timedelta
 
@@ -12,11 +13,14 @@ from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from app.logging_utils import job_context, log_event
 from app.models import PlaidItem, SyncJob, SyncAttempt
 
 from urllib3.exceptions import MaxRetryError, NewConnectionError, ProtocolError, TimeoutError
 
 import plaid
+
+logger = logging.getLogger(__name__)
 
 
 # --- Retry configuration (decisions 010 and 013) ---------------------------
@@ -73,12 +77,17 @@ def enqueue_job(plaid_item, kind):
     """
     try:
         with transaction.atomic():
-            return SyncJob.objects.create(plaid_item=plaid_item, kind=kind)
+            job = SyncJob.objects.create(plaid_item=plaid_item, kind=kind)
     except IntegrityError:
-        return SyncJob.objects.get(
+        existing = SyncJob.objects.get(
             plaid_item=plaid_item,
             status__in=SyncJob.ACTIVE_STATUSES,
         )
+        log_event(logger, "job_already_active", level=logging.DEBUG,
+                  item_id=plaid_item.id, requested_kind=kind, job_id=existing.id, kind=existing.kind)
+        return existing
+    log_event(logger, "job_enqueued", job_id=job.id, item_id=plaid_item.id, kind=kind)
+    return job
 
 
 def enqueue_due_reconciles(now=None):
@@ -182,7 +191,17 @@ def run_job(job):
     - Otherwise: attempt failed; job failed with the final error.
 
     Never re-raises, so one bad job can't kill the worker loop.
+
+    Every log line emitted while the job runs, in any module, carries job_id,
+    attempt, item_id and kind (decision 024, 025).
     """
+    with job_context(job_id=job.id, attempt=job.attempt_number,
+                     item_id=job.plaid_item_id, kind=job.kind):
+        log_event(logger, "job_started")
+        _run_job(job)
+
+
+def _run_job(job):
     # claim_next_job creates this row in the same transaction that claims the job.
     attempt = job.attempts.get(attempt_number=job.attempt_number)
     try:
@@ -201,8 +220,22 @@ def run_job(job):
         if is_retryable(e) and job.attempt_number < MAX_ATTEMPTS:
             delay = compute_backoff(job.attempt_number)
             _schedule_retry(job, attempt, error_code, error_message, delay)
+            log_event(logger, "retry_scheduled", level=logging.WARNING,
+                      error_code=error_code, error=error_message, delay_s=round(delay, 1))
         else:
             _record_failure(job, attempt, error_code, error_message)
+            # A traceback only for errors we can't name: those are usually our bugs.
+            log_event(logger, "job_failed", level=logging.ERROR,
+                      exc_info=e if error_code is None else None,
+                      error_code=error_code, error=error_message,
+                      retryable=is_retryable(e))
+        return
+
+    duration_s = None
+    if job.started_at is not None:
+        duration_s = round((timezone.now() - job.started_at).total_seconds(), 2)
+    log_event(logger, "job_completed", added=job.added_count,
+              modified=job.modified_count, removed=job.removed_count, duration_s=duration_s)
 
 
 # --- Outcome recording: job and attempt are always updated together ---------

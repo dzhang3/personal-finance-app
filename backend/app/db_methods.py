@@ -8,6 +8,10 @@ import uuid
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+import logging
+from app.logging_utils import log_event
+logger = logging.getLogger(__name__)
+
 from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending, PlaidItem
 
 def update_accounts(user, plaid_item, accounts):
@@ -36,47 +40,42 @@ def get_account_transactions(account, start_date, end_date):
 
 def upsert_transactions(transactions_data, accounts, user):
     """Insert new transactions or overwrite existing ones, keyed on transaction_id (decisions 014, 015)."""
-    try:
+    # Get any account IDs we don't have cached yet
+    missing_account_ids = {t['account_id'] for t in transactions_data} - accounts.keys()
+    if missing_account_ids:
+        new_accounts = Account.objects.filter(account_id__in=missing_account_ids)
+        # Update our accounts cache with the new accounts
+        accounts.update({acc.account_id: acc for acc in new_accounts})
+    
+    transactions = []
+    for transaction in transactions_data:
+        # Get the account object from our mapping
+        account = accounts.get(transaction['account_id'])
+        if not account:
+            log_event(logger, "account_not_found", level=logging.WARNING, transaction_id=transaction['transaction_id'], account_id=transaction['account_id'])
+            continue
         
-        # Get any account IDs we don't have cached yet
-        missing_account_ids = {t['account_id'] for t in transactions_data} - accounts.keys()
-        if missing_account_ids:
-            new_accounts = Account.objects.filter(account_id__in=missing_account_ids)
-            # Update our accounts cache with the new accounts
-            accounts.update({acc.account_id: acc for acc in new_accounts})
-        
-        transactions = []
-        for transaction in transactions_data:
-            # Get the account object from our mapping
-            account = accounts.get(transaction['account_id'])
-            if not account:
-                print(f"Account not found for transaction {transaction['transaction_id']}")
-                continue
-            
-            transaction_datetime = _purchase_datetime(transaction)
-            posted_date = _as_date(transaction['date'])
+        transaction_datetime = _purchase_datetime(transaction)
+        posted_date = _as_date(transaction['date'])
 
-            # Create transaction object
-            transaction_obj = Transaction(
-                transaction_id=transaction['transaction_id'],
-                account=account,
-                amount=transaction['amount'],
-                description=transaction.get('name', ''),
-                merchant_name=transaction.get('merchant_name'),
-                datetime=transaction_datetime,
-                posted_date=posted_date,
-                transaction_type=(transaction.get('personal_finance_category') or {}).get('primary', 'UNCATEGORIZED'),
-                payment_channel=transaction.get('payment_channel', 'OTHER')
-            )
-            transactions.append(transaction_obj)
+        # Create transaction object
+        transaction_obj = Transaction(
+            transaction_id=transaction['transaction_id'],
+            account=account,
+            amount=transaction['amount'],
+            description=transaction.get('name', ''),
+            merchant_name=transaction.get('merchant_name'),
+            datetime=transaction_datetime,
+            posted_date=posted_date,
+            transaction_type=(transaction.get('personal_finance_category') or {}).get('primary', 'UNCATEGORIZED'),
+            payment_channel=transaction.get('payment_channel', 'OTHER')
+        )
+        transactions.append(transaction_obj)
 
-        # Bulk create transactions
-        print(f"Upserting {len(transactions)} transactions")
-        Transaction.objects.bulk_create(transactions, update_conflicts=True, unique_fields=['transaction_id'], update_fields=['account', 'amount', 'description', 'merchant_name', 'datetime', 'posted_date', 'transaction_type', 'payment_channel'])
-        return True
-    except Exception as e:
-        print(f"Error upserting transactions: {str(e)}")
-        raise
+    # Bulk create transactions
+    Transaction.objects.bulk_create(transactions, update_conflicts=True, unique_fields=['transaction_id'], update_fields=['account', 'amount', 'description', 'merchant_name', 'datetime', 'posted_date', 'transaction_type', 'payment_channel'])
+    log_event(logger, "transactions_upserted", level=logging.DEBUG, count=len(transactions))
+    return True
 
 
 def _as_date(value):
@@ -115,5 +114,5 @@ def _midnight(date_value):
 
 
 def remove_transactions(transactions):
-    print('removing transactions')
-    Transaction.objects.filter(transaction_id__in=transactions).delete()
+    count, _ = Transaction.objects.filter(transaction_id__in=transactions).delete()
+    log_event(logger, "transactions_removed", level=logging.DEBUG, count=count)

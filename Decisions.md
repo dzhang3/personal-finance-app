@@ -414,3 +414,56 @@ Architecture decisions for the Plaid sync pipeline. Each entry records what was 
 **Why:** Both sides of the comparison filter on the identical value, so the windows match exactly with no tuning. A margin would have to cover the authorization-to-posting gap, which varies by bank, and drift at the edges would never be repaired.
 
 **Tradeoffs accepted:** A migration, and rows written before it have a null `posted_date` until a sync or reconcile rewrites them. The first reconcile after the migration treats those rows as missing and upserts Plaid's version over them, so its audit log shows them as inserts.
+
+---
+
+## 023. Log format: logfmt (`key=value`) through Python's `logging`
+
+**Date:** 2026-10-15
+
+**Context:** Logs were free-text `print` calls. A failure couldn't be tied to a job, Item, or attempt, and there were no levels or timestamps.
+
+**Options considered:**
+- JSON lines
+- `print` with a consistent prefix
+- Plain text with `key=value` pairs (logfmt)
+
+**Chosen:** logfmt via the `logging` module, written to stdout.
+
+**Why:** Readable by eye in `docker compose logs`, which is how these logs are actually read, while still parseable by `grep` and log tools. Moving to `logging` adds levels, timestamps, and one place to configure format and destination. A prefixed `print` would not be structured logging in any defensible sense.
+
+**Tradeoffs accepted:** Less tooling support than JSON, and nested values don't fit well. Switching to JSON later only means changing the formatter class.
+
+---
+
+## 024. Correlation ID: the job ID, with attempt as a separate field
+
+**Date:** 2026-10-15
+
+**Options considered:**
+- A request ID created at the API and carried into the job
+- The job ID
+- A new UUID per attempt
+
+**Chosen:** `job_id`, plus `attempt`, `item_id`, and `kind` on every line of a job.
+
+**Why:** The job ID is stable across retries, so one filter shows a job's whole history, and it's the same key the database uses, so a log line leads straight to the `SyncJob` and `SyncAttempt` rows. A request ID would miss scheduler-created jobs such as reconciles.
+
+**Tradeoffs accepted:** An API request that enqueues several jobs isn't linked to them in the logs. Acceptable with one user, where requests are rare and easy to correlate by time.
+
+---
+
+## 025. Context propagation: `contextvars` plus a logging filter
+
+**Date:** 2026-10-15
+
+**Options considered:**
+- A `LoggerAdapter` per job, passed down
+- Pass the ID explicitly to every function that logs
+- A `contextvars` variable set once when the job starts, read by a logging filter
+
+**Chosen:** `contextvars`, set in `run_job` via `job_context(...)`.
+
+**Why:** The job's fields are set once and appear on every line from any module, including `db_methods`, which knows nothing about jobs, with no signature changes. An adapter would have to be threaded through every call, which is the explicit-passing option in a different shape.
+
+**Tradeoffs accepted:** Implicit: a function's log lines depend on context it didn't receive as an argument. Mitigated by setting the context in exactly one place (`run_job`, plus `worker` in the worker loop). The formatter also redacts any field whose name contains `token`, `secret`, or `password`.

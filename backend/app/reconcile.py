@@ -19,6 +19,10 @@ from decimal import Decimal
 from app import db_methods as db
 from app.models import ReconcileRepair, SyncJob, Transaction
 
+import logging
+from app.logging_utils import log_event
+logger = logging.getLogger(__name__)
+
 RECONCILE_WINDOW_DAYS = 30  # decision 021
 PLAID_PAGE_SIZE = 500  # /transactions/get maximum
 
@@ -49,6 +53,11 @@ def reconcile_item(plaid_item, job, attempt, window_days=RECONCILE_WINDOW_DAYS):
     local_txns = local_window(plaid_item, start_date, end_date)
     missing, extra, mismatched = compute_diff(plaid_txns, local_txns)
     apply_repairs(job, plaid_item.user, missing, extra, mismatched)
+    # WARNING when drift was found, so "did reconcile find anything?" is readable from the level alone.
+    drift = len(missing) + len(mismatched) + len(extra)
+    log_event(logger, "reconcile_completed", level=logging.WARNING if drift else logging.INFO,
+              inserted=len(missing), updated=len(mismatched), deleted=len(extra),
+              plaid_count=len(plaid_txns))
 
 
 def fetch_plaid_window(plaid_item, start_date, end_date):
