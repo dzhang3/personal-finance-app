@@ -278,6 +278,16 @@ def force_transaction_sync(request):
     print('Sync jobs queued for user:', request.user.id)
     return Response(status=status.HTTP_202_ACCEPTED)
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sync_status(request):
+    """Health of every linked Item for this user (decisions 026-028). Read-only."""
+    from app.status import overall_status
+    items = PlaidItem.objects.filter(user=request.user).order_by('id')
+    # DRF's Response renders datetimes as ISO 8601.
+    return Response(overall_status(items))
+
+
 def sync_item(plaid_item, job, attempt):
     """Sync one Item from Plaid, page by page. Called by the worker's run_job.
 

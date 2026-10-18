@@ -7,13 +7,13 @@ import time
 from django.core.management.base import BaseCommand
 from django.db import close_old_connections
 
-from app.jobs import claim_next_job, enqueue_due_reconciles, run_job
+from app.jobs import claim_next_job, enqueue_due_reconciles, enqueue_due_syncs, run_job
 from app.logging_utils import job_context, log_event
 
 logger = logging.getLogger("app.worker")
 
-# How often the worker checks whether any Item is due for a reconcile (decision 020).
-RECONCILE_CHECK_SECONDS = 60
+# How often the worker checks whether any Item is due for a scheduled job (decisions 020, 026).
+SCHEDULE_CHECK_SECONDS = 60
 
 
 class Command(BaseCommand):
@@ -44,16 +44,19 @@ class Command(BaseCommand):
             log_event(logger, "worker_stopped", signal=self._stop_signal)
 
     def _loop(self, poll_interval):
-        last_reconcile_check = None
+        last_schedule_check = None
         while not self._stopping:
             # Long-running process: drop DB connections that have gone stale.
             close_old_connections()
 
-            if last_reconcile_check is None or time.monotonic() - last_reconcile_check >= RECONCILE_CHECK_SECONDS:
-                last_reconcile_check = time.monotonic()
-                queued = enqueue_due_reconciles()
-                if queued:
-                    log_event(logger, "reconciles_queued", count=queued)
+            if last_schedule_check is None or time.monotonic() - last_schedule_check >= SCHEDULE_CHECK_SECONDS:
+                last_schedule_check = time.monotonic()
+                # Syncs first: if both are due, the sync takes the Item's one
+                # active slot and the reconcile waits for a later check.
+                syncs = enqueue_due_syncs()
+                reconciles = enqueue_due_reconciles()
+                if syncs or reconciles:
+                    log_event(logger, "scheduled_jobs_queued", syncs=syncs, reconciles=reconciles)
 
             job = claim_next_job()
             if job is None:

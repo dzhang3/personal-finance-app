@@ -467,3 +467,55 @@ Architecture decisions for the Plaid sync pipeline. Each entry records what was 
 **Why:** The job's fields are set once and appear on every line from any module, including `db_methods`, which knows nothing about jobs, with no signature changes. An adapter would have to be threaded through every call, which is the explicit-passing option in a different shape.
 
 **Tradeoffs accepted:** Implicit: a function's log lines depend on context it didn't receive as an argument. Mitigated by setting the context in exactly one place (`run_job`, plus `worker` in the worker loop). The formatter also redacts any field whose name contains `token`, `secret`, or `password`.
+
+---
+
+## 026. Scheduled syncs every 6 hours
+
+**Date:** 2026-10-16
+
+**Context:** Syncs only ran when triggered manually, so "no recent sync" meant "didn't open the app," not "something broke." A freshness-based health check (027) needs syncs that happen on their own.
+
+**Options considered:**
+- Schedule syncs on an interval
+- Keep syncs manual and show staleness as information only
+
+**Chosen:** The worker queues a sync for any Item with no sync job created in the last 6 hours, using the same scheduler as reconciliation (020).
+
+**Why:** Makes staleness a real failure signal. Costs nothing extra: Transactions is billed per Item per month, not per call. Reuses the queue, so the one-active-job constraint still prevents overlap with manual syncs and reconciles.
+
+**Tradeoffs accepted:** Any sync job in the window counts, including a failed one, so a permanently failed sync isn't retried until the next interval. Retries (010, 013) already cover transient errors, and a persistent failure is what the health check and alert are for. No scheduled syncs while the worker is down.
+
+---
+
+## 027. Health: a successful sync within 12 hours, and no stuck job
+
+**Date:** 2026-10-16
+
+**Options considered:**
+- The most recent job completed
+- No failed jobs within a time window
+- A successful sync within a time window
+
+**Chosen:** An Item is healthy when its latest successful `sync` job finished within 12 hours (two sync intervals) and it has no job `in_progress` for more than 1 minute.
+
+**Why:** Freshness is what the data's user cares about. Only `sync` jobs count, because a reconcile can succeed while the sync path is broken. Two intervals means one missed or failed scheduled run doesn't flip the status by itself. The stuck-job rule catches a worker that died mid-job, which otherwise looks fine until the freshness window runs out; normal syncs take seconds.
+
+**Tradeoffs accepted:** A real failure can take up to 12 hours to show as unhealthy if it isn't a stuck job. A legitimately slow first sync of a large history could exceed 1 minute and be reported stuck.
+
+---
+
+## 028. One status endpoint for all of a user's Items
+
+**Date:** 2026-10-16
+
+**Options considered:**
+- One endpoint per Item
+- One endpoint for all Items
+- Both
+
+**Chosen:** `GET /api/sync_status/`, returning a summary per Item plus a top-level `healthy` flag.
+
+**Why:** With a handful of Items, the full list is small, and it already contains every Item's status, so a per-Item endpoint would duplicate it with no current consumer. The top-level flag gives an alert one yes/no to poll.
+
+**Tradeoffs accepted:** Cost grows with the number of Items per user; irrelevant at this scale. Requires authentication, so an external poller needs a session or a separate mechanism (milestone 8).

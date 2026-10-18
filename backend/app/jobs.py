@@ -47,8 +47,9 @@ RETRYABLE_PLAID_ERROR_CODES = {
 #   ProtocolError      -> connection dropped mid-response
 TRANSIENT_NETWORK_ERRORS = (TimeoutError, NewConnectionError, ProtocolError)
 
-# Decision 020: each Item gets a reconcile job at most once per interval.
+# Decisions 020 and 026: each Item gets a job of each kind at most once per interval.
 RECONCILE_INTERVAL = timedelta(hours=24)
+SYNC_INTERVAL = timedelta(hours=6)
 
 
 def _is_transient_network_error(exc):
@@ -69,7 +70,13 @@ def enqueue_sync(plaid_item):
 
 
 def enqueue_job(plaid_item, kind):
-    """Queue a job of this kind, or return the Item's existing active job (of any kind).
+    """Queue a job of this kind, or return the Item's existing active job (of any kind)."""
+    job, _ = _create_job(plaid_item, kind)
+    return job
+
+
+def _create_job(plaid_item, kind):
+    """Returns (job, created). created is False when an active job already existed.
 
     The nested atomic() creates a savepoint. If the INSERT violates the
     one-active-job constraint, only the savepoint rolls back, so a caller's
@@ -85,29 +92,39 @@ def enqueue_job(plaid_item, kind):
         )
         log_event(logger, "job_already_active", level=logging.DEBUG,
                   item_id=plaid_item.id, requested_kind=kind, job_id=existing.id, kind=existing.kind)
-        return existing
+        return existing, False
     log_event(logger, "job_enqueued", job_id=job.id, item_id=plaid_item.id, kind=kind)
-    return job
+    return job, True
 
 
 def enqueue_due_reconciles(now=None):
-    """Queue a reconcile for every Item without one created in the last RECONCILE_INTERVAL.
+    """Queue a reconcile for every Item without one in the last RECONCILE_INTERVAL (decision 020)."""
+    return _enqueue_due(SyncJob.Kind.RECONCILE, RECONCILE_INTERVAL, now)
 
-    Called periodically by the worker (decision 020). If an Item has a sync
-    active, enqueue_job returns that job instead and nothing is queued; the
-    next check tries again. Returns the number of reconcile jobs queued.
+
+def enqueue_due_syncs(now=None):
+    """Queue a sync for every Item without one in the last SYNC_INTERVAL (decision 026)."""
+    return _enqueue_due(SyncJob.Kind.SYNC, SYNC_INTERVAL, now)
+
+
+def _enqueue_due(kind, interval, now=None):
+    """Queue a job of `kind` for every Item with none created within `interval`.
+
+    Called periodically by the worker. Any job of this kind counts, including a
+    manual sync or a failed one, so a failure doesn't trigger a rapid re-queue
+    loop (retries already cover transient errors). If an Item has another job
+    active, nothing is queued; the next check tries again. Returns the number queued.
     """
     now = now or timezone.now()
-    recently_reconciled = SyncJob.objects.filter(
-        kind=SyncJob.Kind.RECONCILE,
-        created_at__gte=now - RECONCILE_INTERVAL,
+    recent = SyncJob.objects.filter(
+        kind=kind,
+        created_at__gte=now - interval,
     ).values('plaid_item_id')
 
     queued = 0
-    for item in PlaidItem.objects.exclude(id__in=recently_reconciled):
-        job = enqueue_job(item, kind=SyncJob.Kind.RECONCILE)
-        if job.kind == SyncJob.Kind.RECONCILE:
-            queued += 1
+    for item in PlaidItem.objects.exclude(id__in=recent):
+        _, created = _create_job(item, kind)
+        queued += created
     return queued
 
 
