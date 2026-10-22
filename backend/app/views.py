@@ -487,7 +487,8 @@ def edit_transaction(request):
         if not transaction_id:
             return Response({'error': 'Transaction ID is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        transaction = Transaction.objects.filter(transaction_id=transaction_id).first()
+        # Scoped to the caller: another user's transaction is indistinguishable from a missing one.
+        transaction = Transaction.objects.filter(transaction_id=transaction_id, account__user=request.user).first()
         if not transaction:
             return Response({'error': 'Transaction not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -522,7 +523,7 @@ def delete_transaction(request):
         if not transaction_id:
             return Response({'error': 'Transaction ID is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        transaction = Transaction.objects.filter(transaction_id=transaction_id).first()
+        transaction = Transaction.objects.filter(transaction_id=transaction_id, account__user=request.user).first()
         if not transaction:
             return Response({'error': 'Transaction not found'}, status=status.HTTP_404_NOT_FOUND)
 
