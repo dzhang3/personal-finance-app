@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
-import { getTransactions, editTransaction, deleteTransaction } from '@/services/apiService';
-import { 
-  List, 
+import { useEffect, useMemo, useState } from 'react';
+import { getTransactions, editTransaction, deleteTransaction, Transaction } from '@/services/apiService';
+import {
+  Alert,
+  List,
   ListItem, 
   ListItemText, 
   Typography, 
@@ -28,19 +29,13 @@ import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 
 
-interface Transaction {
-  transaction_id: string;
-  amount: number;
-  description: string;
-  merchant_name: string | null;
-  datetime: string;
-  transaction_type: string;
-  account: {
-    name: string;
-    account_type: string;
-    institution: string;
-  };
-}
+// Plaid personal_finance_category primaries, plus the backend's fallback.
+const PLAID_CATEGORIES = [
+  'BANK_FEES', 'ENTERTAINMENT', 'FOOD_AND_DRINK', 'GENERAL_MERCHANDISE', 'GENERAL_SERVICES',
+  'GOVERNMENT_AND_NON_PROFIT', 'HOME_IMPROVEMENT', 'INCOME', 'LOAN_PAYMENTS', 'MEDICAL',
+  'PERSONAL_CARE', 'RENT_AND_UTILITIES', 'TRANSFER_IN', 'TRANSFER_OUT', 'TRANSPORTATION',
+  'TRAVEL', 'UNCATEGORIZED',
+];
 
 interface TransactionSummary {
   expenses: number;
@@ -223,18 +218,17 @@ const AmountRangeSlider = ({
 };
 
 export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: TransactionListProps) {
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [timeFrame, setTimeFrame] = useState<TimeFrame>('month');
+  // The only stored copy of the data; every list below is derived from it.
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [timeFrame, setTimeFrame] = useState<TimeFrame>('month');
   const [filters, setFilters] = useState<FilterState>({
     category: '',
     minAmount: '',
     maxAmount: ''
   });
-  const [categories, setCategories] = useState<string[]>([]);
   const [isFilterDrawerOpen, setIsFilterDrawerOpen] = useState(false);
   const [activeTransactionId, setActiveTransactionId] = useState<string | null>(null);
 
@@ -246,57 +240,53 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
   const handleTransactionClick = (transactionId: string) => {
     setActiveTransactionId((prev) => (prev === transactionId ? null : transactionId));
   };
-  const maxAmount = Math.max(...transactions.map(t => t.amount));
 
   useEffect(() => {
+    // Ignore a response that arrives after a newer fetch started or the component unmounted.
+    let cancelled = false;
     const fetchTransactions = async () => {
       try {
         const data = await getTransactions();
-        // Sort transactions by date in descending order (most recent first)
-        const sortedTransactions = data.sort((a: Transaction, b: Transaction) => 
+        if (cancelled) return;
+        // Most recent first
+        setAllTransactions([...data].sort((a, b) =>
           new Date(b.datetime).getTime() - new Date(a.datetime).getTime()
-        );
-        setAllTransactions(sortedTransactions);
-        setLoading(false);
+        ));
+        setLoadError(null);
       } catch (err) {
+        if (cancelled) return;
         console.error('Failed to fetch transactions:', err);
-        setError('Failed to fetch transactions');
-        setLoading(false);
+        setLoadError('Failed to load transactions.');
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     };
 
     fetchTransactions();
+    return () => { cancelled = true; };
   }, [reloadKey]);
 
-  useEffect(() => {
+  const transactions = useMemo(() => {
     const startDate = getTimeFrameStart(timeFrame);
     const endDate = getTimeFrameEnd(timeFrame);
-    
-    const filteredTransactions = allTransactions.filter(transaction => {
+    return allTransactions.filter(transaction => {
       const transactionDate = new Date(transaction.datetime);
       return transactionDate >= startDate && transactionDate <= endDate;
     });
-    
-    setTransactions(filteredTransactions);
   }, [timeFrame, allTransactions]);
 
-  useEffect(() => {
-    // Extract unique categories from transactions
-    const uniqueCategories = Array.from(new Set(
-      transactions.map(t => t.transaction_type)
-    )).sort();
-    setCategories(uniqueCategories);
-  }, [transactions]);
+  const categories = useMemo(
+    () => Array.from(new Set(transactions.map(t => t.transaction_type))).sort(),
+    [transactions]
+  );
 
-  useEffect(() => {
-    let filtered = [...transactions];
+  const filteredTransactions = useMemo(() => {
+    let filtered = transactions;
 
-    // Apply category filter
     if (filters.category) {
       filtered = filtered.filter(t => t.transaction_type === filters.category);
     }
 
-    // Apply amount filters
     const minAmount = filters.minAmount ? parseFloat(filters.minAmount) : 0;
     const maxAmount = filters.maxAmount ? parseFloat(filters.maxAmount) : Infinity;
 
@@ -304,22 +294,16 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
       filtered = filtered.filter(t => t.amount >= minAmount && t.amount <= maxAmount);
     }
 
-    setFilteredTransactions(filtered);
+    return filtered;
   }, [transactions, filters]);
+
+  const maxAmount = Math.max(...transactions.map(t => t.amount));
 
   if (loading) {
     return (
       <Box display="flex" justifyContent="center" p={4}>
         <CircularProgress />
       </Box>
-    );
-  }
-
-  if (error) {
-    return (
-      <Typography color="error" align="center">
-        {error}
-      </Typography>
     );
   }
 
@@ -347,37 +331,38 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
   const activeFiltersCount = Object.values(filters).filter(Boolean).length;
 
   
-  const handleEditTransaction = async (transaction: Transaction) => {
-    const transactionId = transaction.transaction_id;
-    console.log(`Editing transaction with ID: ${transactionId}`);
-    console.log(editValue, editAmount, editCategory);
-    // Implement the edit logic here (e.g., show a modal with editable fields)
-    await editTransaction(transactionId, editValue, editAmount, editCategory);
-    setFilteredTransactions((prevTransactions) => 
-      prevTransactions.map((t) => 
-        t.transaction_id === transactionId 
-          ? { ...t, merchant_name: editValue, amount: parseFloat(editAmount), transaction_type: editCategory }
-          : t
-      )
-    );
-    setEditingId(null);
-  };
-  
-  const handleDeleteTransaction = async (transactionId: string) => {
-    console.log(`Deleting transaction with ID: ${transactionId}`);
+  const handleEditTransaction = async (transactionId: string) => {
+    const amount = Number(editAmount);
+    if (editAmount.trim() === '' || !Number.isFinite(amount)) {
+      setActionError('Amount must be a number.');
+      return;
+    }
     try {
-      const isConfirmed = window.confirm('Are you sure you want to delete this transaction?');
-      if (!isConfirmed) return;
-      // Call the delete API endpoint
-      await deleteTransaction(transactionId);
+      await editTransaction(transactionId, editValue, editAmount, editCategory);
+      setAllTransactions((prev) =>
+        prev.map((t) =>
+          t.transaction_id === transactionId
+            ? { ...t, merchant_name: editValue, amount, transaction_type: editCategory }
+            : t
+        )
+      );
+      setEditingId(null);
+      setActionError(null);
+    } catch (err) {
+      console.error('Failed to edit transaction:', err);
+      setActionError(`Failed to save changes: ${err instanceof Error ? err.message : 'unknown error'}`);
+    }
+  };
 
-      // Update the transactions list after deletion
+  const handleDeleteTransaction = async (transactionId: string) => {
+    if (!window.confirm('Are you sure you want to delete this transaction?')) return;
+    try {
+      await deleteTransaction(transactionId);
       setAllTransactions((prev) => prev.filter(t => t.transaction_id !== transactionId));
-      setTransactions((prev) => prev.filter(t => t.transaction_id !== transactionId));
-      setFilteredTransactions((prev) => prev.filter(t => t.transaction_id !== transactionId));
+      setActionError(null);
     } catch (err) {
       console.error('Failed to delete transaction:', err);
-      setError('Failed to delete transaction');
+      setActionError(`Failed to delete transaction: ${err instanceof Error ? err.message : 'unknown error'}`);
     }
   };
 
@@ -387,6 +372,9 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
     setEditAmount(transaction.amount.toString());
     setEditCategory(transaction.transaction_type);
   };
+
+  // Plaid's primary categories, plus the transaction's current one in case it's custom.
+  const editCategoryOptions = Array.from(new Set([...PLAID_CATEGORIES, editCategory])).filter(Boolean);
 
   return (
     <Paper elevation={2} sx={{ maxWidth: 800, mx: 'auto', mt: 4, p: 2 }}>
@@ -421,6 +409,17 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
           </Button>
         </Box>
       </Box>
+
+      {loadError && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {loadError}
+        </Alert>
+      )}
+      {actionError && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setActionError(null)}>
+          {actionError}
+        </Alert>
+      )}
 
       {/* Active Filters */}
       {activeFiltersCount > 0 && (
@@ -589,7 +588,8 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
               <ListItem
                 key={transaction.transaction_id}
                 divider
-                onClick={() => handleTransactionClick(transaction.transaction_id)}
+                // While editing, clicks belong to the form fields, not the row toggle.
+                onClick={editingId === transaction.transaction_id ? undefined : () => handleTransactionClick(transaction.transaction_id)}
                 sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 2, cursor: 'pointer' }}
               >
                 {editingId === transaction.transaction_id ? (
@@ -606,15 +606,28 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
                       onChange={(e) => setEditAmount(e.target.value)}
                       size="small"
                       label="Amount"
+                      inputProps={{ inputMode: 'decimal' }}
+                      sx={{ width: 120 }}
                     />
                     <TextField
+                      select
                       value={editCategory}
                       onChange={(e) => setEditCategory(e.target.value)}
                       size="small"
                       label="Category"
-                    />
-                    <Button variant="contained" size="small" onClick={() => handleEditTransaction(transaction)}>
+                      sx={{ minWidth: 180 }}
+                    >
+                      {editCategoryOptions.map(category => (
+                        <MenuItem key={category} value={category}>
+                          {category}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+                    <Button variant="contained" size="small" onClick={() => handleEditTransaction(transaction.transaction_id)}>
                       Save
+                    </Button>
+                    <Button size="small" onClick={() => setEditingId(null)}>
+                      Cancel
                     </Button>
                   </Box>
                 ) : (
@@ -637,11 +650,11 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
                                 {time}
                               </Typography>
                             )}
-                            <Typography 
-                              variant="body2" 
-                              component="div" 
+                            <Typography
+                              variant="body2"
+                              component="span"
                               color="textSecondary"
-                              sx={{ mt: 0.5 }}
+                              sx={{ mt: 0.5, display: 'block' }}
                             >
                               {transaction.account.institution !== 'Unknown' ? `${transaction.account.institution} • ` : ''}{transaction.account.name} • {transaction.transaction_type}
                             </Typography>
@@ -658,10 +671,10 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
                     </Typography>
                     {activeTransactionId === transaction.transaction_id && (
                       <Box sx={{ textAlign: 'right', minWidth: 80, display: 'flex', gap: 1 }}>
-                        <IconButton onClick={() => handleEditClick(transaction)} size="small">
+                        <IconButton onClick={() => handleEditClick(transaction)} size="small" aria-label="Edit transaction">
                           <EditIcon />
                         </IconButton>
-                        <IconButton onClick={() => handleDeleteTransaction(transaction.transaction_id)} size="small">
+                        <IconButton onClick={() => handleDeleteTransaction(transaction.transaction_id)} size="small" aria-label="Delete transaction">
                           <DeleteIcon />
                         </IconButton>
                       </Box>
