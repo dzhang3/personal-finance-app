@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getTransactions, editTransaction, deleteTransaction, Transaction } from '@/services/apiService';
+import { formatCategory, formatCurrency, formatTransactionAmount, summarizeSpending } from '@/lib/finance';
 import {
   Alert,
   List,
@@ -36,11 +37,6 @@ const PLAID_CATEGORIES = [
   'PERSONAL_CARE', 'RENT_AND_UTILITIES', 'TRANSFER_IN', 'TRANSFER_OUT', 'TRANSPORTATION',
   'TRAVEL', 'UNCATEGORIZED',
 ];
-
-interface TransactionSummary {
-  expenses: number;
-  categories: Record<string, number>;
-}
 
 interface TransactionListProps {
   // Changes when a sync finishes; triggers a refetch.
@@ -117,21 +113,6 @@ const formatDateTime = (isoString: string) => {
     date: date.toLocaleDateString('en-US', dateOptions),
     time,
   };
-};
-
-const calculateTransactionSummary = (transactions: Transaction[]): TransactionSummary => {
-  return transactions.reduce((summary, transaction) => {
-    // All transactions from backend are now expenses (positive amounts)
-    summary.expenses += transaction.amount;
-    // Add to category total
-    const categories: Record<string, number> = summary.categories;
-    categories[transaction.transaction_type] = (categories[transaction.transaction_type] || 0) + transaction.amount;
-    return summary;
-  }, { expenses: 0, categories: {} as Record<string, number> });
-};
-
-const formatCurrency = (amount: number): string => {
-  return `$${amount.toFixed(2)}`;
 };
 
 const COLORS = [
@@ -307,9 +288,9 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
     );
   }
 
-  const summary = calculateTransactionSummary(filteredTransactions);
-  const pieData = Object.entries(summary.categories).map(([name, value]) => ({
-    name,
+  const summary = summarizeSpending(filteredTransactions);
+  const pieData = summary.categories.map(({ name, value }) => ({
+    name: formatCategory(name),
     value
   }));
 
@@ -426,7 +407,7 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
         <Stack direction="row" spacing={1} sx={{ mb: 3, flexWrap: 'wrap', gap: 1 }}>
           {filters.category && (
             <Chip 
-              label={`Category: ${filters.category}`}
+              label={`Category: ${formatCategory(filters.category)}`}
               onDelete={() => handleFilterChange('category', '')}
               size="small"
             />
@@ -468,7 +449,7 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
               <MenuItem value="">All Categories</MenuItem>
               {categories.map(category => (
                 <MenuItem key={category} value={category}>
-                  {category}
+                  {formatCategory(category)}
                 </MenuItem>
               ))}
             </Select>
@@ -519,10 +500,13 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
       >
         <Box>
           <Typography variant="subtitle2" color="textSecondary">
-            Total Expenses {activeFiltersCount > 0 && '(Filtered)'}
+            Net Spending {activeFiltersCount > 0 && '(Filtered)'}
           </Typography>
           <Typography variant="h6" color="error.main">
-            {formatCurrency(summary.expenses)}
+            {formatCurrency(summary.total)}
+          </Typography>
+          <Typography variant="caption" color="textSecondary">
+            Refunds included; transfers, loan payments and income excluded
           </Typography>
         </Box>
       </Box>
@@ -606,6 +590,7 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
                       onChange={(e) => setEditAmount(e.target.value)}
                       size="small"
                       label="Amount"
+                      helperText="Positive = money out"
                       inputProps={{ inputMode: 'decimal' }}
                       sx={{ width: 120 }}
                     />
@@ -619,7 +604,7 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
                     >
                       {editCategoryOptions.map(category => (
                         <MenuItem key={category} value={category}>
-                          {category}
+                          {formatCategory(category)}
                         </MenuItem>
                       ))}
                     </TextField>
@@ -656,7 +641,7 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
                               color="textSecondary"
                               sx={{ mt: 0.5, display: 'block' }}
                             >
-                              {transaction.account.institution !== 'Unknown' ? `${transaction.account.institution} • ` : ''}{transaction.account.name} • {transaction.transaction_type}
+                              {transaction.account.institution !== 'Unknown' ? `${transaction.account.institution} • ` : ''}{transaction.account.name} • {formatCategory(transaction.transaction_type)}
                             </Typography>
                           </Box>
                         }
@@ -664,10 +649,10 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
                     </Box>
                     <Typography
                       variant="body1"
-                      color={transaction.amount > 0 ? 'error.main' : 'success.main'}
-                      sx={{ fontWeight: 'medium' }}
+                      color={transaction.amount > 0 ? 'text.primary' : 'success.main'}
+                      sx={{ fontWeight: 'medium', whiteSpace: 'nowrap' }}
                     >
-                      {transaction.amount}
+                      {formatTransactionAmount(transaction.amount)}
                     </Typography>
                     {activeTransactionId === transaction.transaction_id && (
                       <Box sx={{ textAlign: 'right', minWidth: 80, display: 'flex', gap: 1 }}>
