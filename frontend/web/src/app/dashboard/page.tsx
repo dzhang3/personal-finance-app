@@ -2,13 +2,39 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Container, Box, Typography, Button } from '@mui/material';
+import { Container, Box, Typography, Button, Alert } from '@mui/material';
 import TransactionList from '@/components/TransactionList';
+import SyncStatusPanel from '@/components/SyncStatusPanel';
+import { useSyncStatus } from '@/hooks/useSyncStatus';
 import { checkAuth, logoutUser } from '@/services/apiService';
+
+// Mounted only after the auth check passes, so its data requests never run logged out.
+function DashboardContent({ onAddAccount }: { onAddAccount: () => void }) {
+  // Bumped when a sync finishes, telling TransactionList to refetch.
+  const [transactionsVersion, setTransactionsVersion] = useState(0);
+  const sync = useSyncStatus(() => setTransactionsVersion(v => v + 1));
+
+  return (
+    <>
+      <SyncStatusPanel
+        status={sync.status}
+        error={sync.error}
+        isSyncing={sync.isSyncing}
+        onRefresh={sync.refresh}
+      />
+      <TransactionList
+        reloadKey={transactionsVersion}
+        isSyncing={sync.isSyncing}
+        onAddAccount={onAddAccount}
+      />
+    </>
+  );
+}
 
 export default function Dashboard() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
 
   useEffect(() => {
     const handleAuth = async () => {
@@ -31,9 +57,10 @@ export default function Dashboard() {
   const handleLogout = async () => {
     try {
       await logoutUser();
-      router.push('/login');
+      router.replace('/login');
     } catch (error) {
       console.error('Logout failed:', error);
+      setLogoutError('Logout failed. Please try again.');
     }
   };
 
@@ -56,7 +83,12 @@ export default function Dashboard() {
             Logout
           </Button>
         </Box>
-        <TransactionList onAddAccount={handleAddAccount} />
+        {logoutError && (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            {logoutError}
+          </Alert>
+        )}
+        <DashboardContent onAddAccount={handleAddAccount} />
       </Box>
     </Container>
   );

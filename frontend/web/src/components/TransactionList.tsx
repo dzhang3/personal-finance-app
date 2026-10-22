@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getTransactions, forceTransactionSync, editTransaction, deleteTransaction } from '@/services/apiService';
+import { getTransactions, editTransaction, deleteTransaction } from '@/services/apiService';
 import { 
   List, 
   ListItem, 
@@ -48,6 +48,9 @@ interface TransactionSummary {
 }
 
 interface TransactionListProps {
+  // Changes when a sync finishes; triggers a refetch.
+  reloadKey: number;
+  isSyncing: boolean;
   onAddAccount: () => void;
 }
 
@@ -219,11 +222,10 @@ const AmountRangeSlider = ({
   );
 };
 
-export default function TransactionList({ onAddAccount }: TransactionListProps) {
+export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: TransactionListProps) {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isSyncing, setIsSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [timeFrame, setTimeFrame] = useState<TimeFrame>('month');
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
@@ -246,31 +248,9 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
   };
   const maxAmount = Math.max(...transactions.map(t => t.amount));
 
-  const handleForceSync = async () => {
-    try {
-      setIsSyncing(true);
-      setError(null);
-      
-      forceTransactionSync();
-
-      // Refetch transactions after sync
-      const data = await getTransactions();
-      const sortedTransactions = data.sort((a: Transaction, b: Transaction) => 
-        new Date(b.datetime).getTime() - new Date(a.datetime).getTime()
-      );
-      setAllTransactions(sortedTransactions);
-    } catch (err) {
-      console.error('Failed to sync transactions:', err);
-      setError('Failed to sync transactions');
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
   useEffect(() => {
     const fetchTransactions = async () => {
       try {
-        console.log('fetching transactions')
         const data = await getTransactions();
         // Sort transactions by date in descending order (most recent first)
         const sortedTransactions = data.sort((a: Transaction, b: Transaction) => 
@@ -286,7 +266,7 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
     };
 
     fetchTransactions();
-  }, []);
+  }, [reloadKey]);
 
   useEffect(() => {
     const startDate = getTimeFrameStart(timeFrame);
@@ -415,15 +395,6 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
           Recent Transactions
         </Typography>
         <Box sx={{ display: 'flex', gap: 2 }}>
-          <Button
-            variant="outlined"
-            onClick={handleForceSync}
-            disabled={isSyncing}
-            startIcon={isSyncing ? <CircularProgress size={20} /> : null}
-            size="small"
-          >
-            {isSyncing ? 'Syncing...' : 'Refresh Transactions'}
-          </Button>
           <FormControl sx={{ minWidth: 150 }}>
             <InputLabel id="time-frame-label">Time Frame</InputLabel>
             <Select
@@ -606,7 +577,9 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
 
       {filteredTransactions.length === 0 ? (
         <Typography align="center" color="textSecondary" sx={{ my: 4 }}>
-          No transactions found
+          {isSyncing && allTransactions.length === 0
+            ? 'Your transactions are syncing. They will appear here when the sync finishes.'
+            : 'No transactions found'}
         </Typography>
       ) : (
         <List>
