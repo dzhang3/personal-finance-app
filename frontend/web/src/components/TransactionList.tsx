@@ -57,73 +57,75 @@ interface FilterState {
   maxAmount: string;
 }
 
-// Add this new component for the amount slider
-const AmountRangeSlider = ({ 
-  minAmount, 
-  maxAmount, 
+/**
+ * Local state only while the user drags or types; the parent's filters are the
+ * source of truth. The parent remounts this (via `key`) when filters or bounds
+ * change, which resets the local state to match.
+ */
+const AmountRangeSlider = ({
+  minAmount,
+  maxAmount,
   onChange,
-  maxPossibleAmount
-}: { 
-  minAmount: string; 
-  maxAmount: string; 
+  bounds: [lowest, highest]
+}: {
+  minAmount: string;
+  maxAmount: string;
   onChange: (min: string, max: string) => void;
-  maxPossibleAmount: number;
+  bounds: [number, number];
 }) => {
-  const [value, setValue] = useState<number[]>([
-    minAmount ? parseFloat(minAmount) : 0,
-    maxAmount ? parseFloat(maxAmount) : maxPossibleAmount
-  ]);
+  const initial = [
+    minAmount ? parseFloat(minAmount) : lowest,
+    maxAmount ? parseFloat(maxAmount) : highest
+  ];
+  const [value, setValue] = useState<number[]>(initial);
+  const [text, setText] = useState<string[]>(initial.map(String));
 
-  const handleChange = (_event: Event, newValue: number | number[]) => {
-    if (Array.isArray(newValue)) {
-      setValue(newValue);
-    }
+  const clamp = (n: number) => Math.min(highest, Math.max(lowest, n));
+
+  const commit = ([a, b]: number[]) => {
+    const [low, high] = a <= b ? [a, b] : [b, a];
+    setValue([low, high]);
+    setText([String(low), String(high)]);
+    // A handle at the edge of the range means "no limit", so new data outside it still shows.
+    onChange(low <= lowest ? '' : String(low), high >= highest ? '' : String(high));
   };
 
-  const handleChangeCommitted = (_event: React.SyntheticEvent | Event, newValue: number | number[]) => {
-    if (Array.isArray(newValue)) {
-      onChange(newValue[0].toString(), newValue[1].toString());
-    }
+  // Typed values are applied on blur or Enter, not per keystroke.
+  const commitText = () => {
+    const [a, b] = text.map(parseFloat);
+    commit([Number.isFinite(a) ? clamp(a) : value[0], Number.isFinite(b) ? clamp(b) : value[1]]);
+  };
+
+  const textFieldProps = {
+    size: 'small' as const,
+    onBlur: commitText,
+    onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter') commitText(); },
+    inputProps: { inputMode: 'decimal' as const },
+    InputProps: { startAdornment: <InputAdornment position="start">$</InputAdornment> },
+    sx: { width: '45%' },
   };
 
   return (
     <Box sx={{ width: '100%', px: 2 }}>
       <Slider
         value={value}
-        onChange={handleChange}
-        onChangeCommitted={handleChangeCommitted}
+        onChange={(_event, newValue) => {
+          if (Array.isArray(newValue)) {
+            setValue(newValue);
+            setText(newValue.map(String));
+          }
+        }}
+        onChangeCommitted={(_event, newValue) => {
+          if (Array.isArray(newValue)) commit(newValue);
+        }}
         valueLabelDisplay="auto"
-        min={0}
-        max={maxPossibleAmount}
-        valueLabelFormat={(value) => `$${value}`}
+        min={lowest}
+        max={highest}
+        valueLabelFormat={(v) => formatCurrency(v)}
       />
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 2 }}>
-        <TextField
-          size="small"
-          value={value[0]}
-          onChange={(e) => {
-            const newValue = e.target.value;
-            setValue([parseFloat(newValue) || 0, value[1]]);
-            onChange(newValue, value[1].toString());
-          }}
-          InputProps={{
-            startAdornment: <InputAdornment position="start">$</InputAdornment>,
-          }}
-          sx={{ width: '45%' }}
-        />
-        <TextField
-          size="small"
-          value={value[1]}
-          onChange={(e) => {
-            const newValue = e.target.value;
-            setValue([value[0], parseFloat(newValue) || maxPossibleAmount]);
-            onChange(value[0].toString(), newValue);
-          }}
-          InputProps={{
-            startAdornment: <InputAdornment position="start">$</InputAdornment>,
-          }}
-          sx={{ width: '45%' }}
-        />
+        <TextField {...textFieldProps} label="Min" value={text[0]} onChange={(e) => setText([e.target.value, text[1]])} />
+        <TextField {...textFieldProps} label="Max" value={text[1]} onChange={(e) => setText([text[0], e.target.value])} />
       </Box>
     </Box>
   );
@@ -195,7 +197,8 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
       filtered = filtered.filter(t => t.transaction_type === filters.category);
     }
 
-    const minAmount = filters.minAmount ? parseFloat(filters.minAmount) : 0;
+    // Empty means unbounded; amounts can be negative (refunds, income).
+    const minAmount = filters.minAmount ? parseFloat(filters.minAmount) : -Infinity;
     const maxAmount = filters.maxAmount ? parseFloat(filters.maxAmount) : Infinity;
 
     if (filters.minAmount || filters.maxAmount) {
@@ -205,7 +208,11 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
     return filtered;
   }, [transactions, filters]);
 
-  const maxAmount = Math.max(...transactions.map(t => t.amount));
+  // Slider range: whole dollars covering every amount in the time frame, always including 0.
+  const amountBounds = useMemo((): [number, number] => {
+    const amounts = transactions.map(t => t.amount);
+    return [Math.floor(Math.min(0, ...amounts)), Math.ceil(Math.max(0, ...amounts))];
+  }, [transactions]);
 
   if (loading) {
     return (
@@ -236,9 +243,10 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
     });
   };
 
-  const activeFiltersCount = Object.values(filters).filter(Boolean).length;
+  const hasAmountFilter = Boolean(filters.minAmount || filters.maxAmount);
+  // The amount range counts as one filter.
+  const activeFiltersCount = (filters.category ? 1 : 0) + (hasAmountFilter ? 1 : 0);
 
-  
   const handleEditTransaction = async (transactionId: string) => {
     const amount = Number(editAmount);
     if (editAmount.trim() === '' || !Number.isFinite(amount)) {
@@ -339,13 +347,10 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
               size="small"
             />
           )}
-          {(filters.minAmount || filters.maxAmount) && (
-            <Chip 
-              label={`Amount: ${filters.minAmount ? `$${filters.minAmount}` : '$0'} - ${filters.maxAmount ? `$${filters.maxAmount}` : 'Any'}`}
-              onDelete={() => {
-                handleFilterChange('minAmount', '');
-                handleFilterChange('maxAmount', '');
-              }}
+          {hasAmountFilter && (
+            <Chip
+              label={`Amount: ${filters.minAmount ? formatCurrency(parseFloat(filters.minAmount)) : 'Any'} to ${filters.maxAmount ? formatCurrency(parseFloat(filters.maxAmount)) : 'Any'}`}
+              onDelete={() => setFilters(prev => ({ ...prev, minAmount: '', maxAmount: '' }))}
               size="small"
             />
           )}
@@ -382,15 +387,17 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
             </Select>
           </FormControl>
 
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>Price Range</Typography>
+          <Typography variant="subtitle2">Amount Range</Typography>
+          <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mb: 1 }}>
+            Positive = money out; negative = refunds and income
+          </Typography>
           <AmountRangeSlider
+            // Remount when filters or bounds change elsewhere (Clear All, chip, time frame).
+            key={`${filters.minAmount}|${filters.maxAmount}|${amountBounds.join('|')}`}
             minAmount={filters.minAmount}
             maxAmount={filters.maxAmount}
-            onChange={(min, max) => {
-              handleFilterChange('minAmount', min);
-              handleFilterChange('maxAmount', max);
-            }}
-            maxPossibleAmount={maxAmount}
+            onChange={(min, max) => setFilters(prev => ({ ...prev, minAmount: min, maxAmount: max }))}
+            bounds={amountBounds}
           />
 
           <Box sx={{ mt: 3, display: 'flex', gap: 2 }}>
