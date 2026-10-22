@@ -10,6 +10,7 @@ import {
   Paper,
   Link,
   Alert,
+  CircularProgress,
 } from '@mui/material';
 import { useRouter } from 'next/navigation';
 import { loginUser } from '@/services/apiService';
@@ -19,24 +20,20 @@ export default function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setIsLoading(true);
 
     try {
-      console.log("this is testing console")
-      // Attempt login
-      loginUser(username, password);
-
-      // Redirect to main page on success
+      // Must finish before navigating: '/' checks the session cookie this sets.
+      await loginUser(username, password);
       router.push('/');
     } catch (err) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError('An unknown error occurred during login');
-      }
+      setError(err instanceof Error ? err.message : 'An unknown error occurred during login');
+      setIsLoading(false);
     }
   };
 
@@ -94,8 +91,9 @@ export default function LoginPage() {
               fullWidth
               variant="contained"
               sx={{ mt: 3, mb: 2 }}
+              disabled={isLoading}
             >
-              Sign In
+              {isLoading ? <CircularProgress size={24} /> : 'Sign In'}
             </Button>
             <Box sx={{ textAlign: 'center' }}>
               <Link href="/register" variant="body2">

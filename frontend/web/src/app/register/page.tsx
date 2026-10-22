@@ -47,18 +47,11 @@ export default function RegisterPage() {
     }
 
     try {
-      registerUser(formData.username, formData.email, formData.password);
+      // Register also logs in; wait for the session cookie before '/' checks it.
+      await registerUser(formData.username, formData.email, formData.password);
       router.push('/');
     } catch (err) {
-      if (err instanceof Error) {
-        console.error('Registration error:', err);
-        setError(err.message || 'An error occurred during registration');
-      }
-      else {
-        console.error('Unexpected error:', err);
-        setError('An unexpected error occurred');
-      }
-    } finally {
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred');
       setIsLoading(false);
     }
   };
