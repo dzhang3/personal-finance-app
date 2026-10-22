@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getTransactions, editTransaction, deleteTransaction, Transaction } from '@/services/apiService';
 import { formatCategory, formatCurrency, formatTransactionAmount, summarizeSpending } from '@/lib/finance';
+import { formatDateTime, getTimeFrameRange, isInTimeFrame, TimeFrame, timeFrameLabels } from '@/lib/dates';
 import {
   Alert,
   List,
@@ -44,76 +45,6 @@ interface TransactionListProps {
   isSyncing: boolean;
   onAddAccount: () => void;
 }
-
-type TimeFrame = 'all' | 'week' | 'month' | 'prevMonth' | 'ytd' | 'year';
-
-const getTimeFrameStart = (timeFrame: TimeFrame): Date => {
-  const now = new Date();
-  switch (timeFrame) {
-    case 'week':
-      const weekStart = new Date(now);
-      weekStart.setDate(now.getDate() - now.getDay()); // Start of current week (Sunday)
-      return weekStart;
-    case 'month':
-      return new Date(now.getFullYear(), now.getMonth(), 1); // Start of current month
-    case 'prevMonth':
-      return new Date(now.getFullYear(), now.getMonth() - 1, 1); // Start of previous month
-    case 'ytd':
-      return new Date(now.getFullYear(), 0, 1); // Start of current year
-    case 'year':
-      const yearStart = new Date(now.getFullYear(), 0, 1); // Start of current year
-      yearStart.setFullYear(yearStart.getFullYear() - 1); // Go back one year
-      return yearStart;
-    default:
-      return new Date(0); // Beginning of time for 'all'
-  }
-};
-
-const getTimeFrameEnd = (timeFrame: TimeFrame): Date => {
-  const now = new Date();
-  if (timeFrame === 'prevMonth') {
-    return new Date(now.getFullYear(), now.getMonth(), 0); // End of previous month
-  }
-  return now;
-};
-
-const timeFrameLabels: Record<TimeFrame, string> = {
-  all: 'All Time',
-  week: 'This Week',
-  month: 'This Month',
-  prevMonth: 'Previous Month',
-  ytd: 'Year to Date',
-  year: 'Last 12 Months'
-};
-
-const formatDateTime = (isoString: string) => {
-  const date = new Date(isoString);
-  
-  // Format date
-  const dateOptions: Intl.DateTimeFormatOptions = {
-    weekday: 'short',
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  };
-  
-  // Check if the time is midnight (00:00:00) which likely means it's a date-only value
-  const isDateOnly = date.getUTCHours() === 0 && 
-                    date.getUTCMinutes() === 0 && 
-                    date.getUTCSeconds() === 0;
-  
-  // Only format time if it's not midnight
-  const time = !isDateOnly ? date.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-  }) : null;
-  
-  return {
-    date: date.toLocaleDateString('en-US', dateOptions),
-    time,
-  };
-};
 
 const COLORS = [
   '#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8', 
@@ -248,12 +179,8 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
   }, [reloadKey]);
 
   const transactions = useMemo(() => {
-    const startDate = getTimeFrameStart(timeFrame);
-    const endDate = getTimeFrameEnd(timeFrame);
-    return allTransactions.filter(transaction => {
-      const transactionDate = new Date(transaction.datetime);
-      return transactionDate >= startDate && transactionDate <= endDate;
-    });
+    const range = getTimeFrameRange(timeFrame);
+    return allTransactions.filter(transaction => isInTimeFrame(transaction.datetime, range));
   }, [timeFrame, allTransactions]);
 
   const categories = useMemo(
