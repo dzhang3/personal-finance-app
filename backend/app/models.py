@@ -130,6 +130,10 @@ class SyncJob(models.Model):
     removed_count = models.IntegerField(default=0)
     # Decision 012: a queued job is not claimable before this time. Null means "now".
     run_after = models.DateTimeField(null=True, blank=True)
+    # Decision 030: while in_progress, the claiming worker owns the job until this
+    # time and must renew it as it works. Once it passes, another worker may claim
+    # the job as a new attempt. attempt_number doubles as the fencing token.
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
 
     ACTIVE_STATUSES = (Status.QUEUED, Status.IN_PROGRESS)
 
@@ -154,6 +158,8 @@ class SyncAttempt(models.Model):
         COMPLETED = 'completed', 'Completed'
         RETRY_SCHEDULED = 'retry_scheduled', 'Failed, retry scheduled'
         FAILED = 'failed', 'Failed permanently'
+        # The worker stopped renewing (died or froze) and another worker took over.
+        LEASE_EXPIRED = 'lease_expired', 'Abandoned, lease expired'
 
     job = models.ForeignKey(SyncJob, on_delete=models.CASCADE, related_name='attempts')
     attempt_number = models.IntegerField()

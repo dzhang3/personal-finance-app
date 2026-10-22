@@ -12,15 +12,16 @@ from app.models import SyncJob
 # Healthy means a sync succeeded within this window. Two sync intervals, so one
 # missed or failed scheduled run doesn't flip the status on its own.
 FRESHNESS_WINDOW = 2 * SYNC_INTERVAL
-# A job in_progress longer than this means the worker running it died or hung.
-# A normal sync takes a few seconds.
+# Kept for reference and tests: a normal job finishes in seconds. Since decision
+# 030, "stuck" means an in_progress job whose lease has expired (or that has no
+# lease, from before leases existed) and that no worker has reclaimed yet.
 STUCK_AFTER = timedelta(minutes=1)
 
 
 class Reason:
     """Why an Item is (un)healthy. The first one that applies wins."""
     OK = 'ok'
-    JOB_STUCK = 'job_stuck'              # in_progress past STUCK_AFTER
+    JOB_STUCK = 'job_stuck'              # in_progress with an expired lease, not reclaimed
     NEVER_SYNCED = 'never_synced'        # no successful sync at all
     STALE = 'stale'                      # last success older than FRESHNESS_WINDOW
 
@@ -43,7 +44,8 @@ def item_status(plaid_item, now=None):
     Rules (decision 027):
       - Only kind=sync jobs count toward freshness. A reconcile can succeed
         while the sync path is broken.
-      - Unhealthy if the active job has been in_progress longer than STUCK_AFTER.
+      - Unhealthy if the active job is in_progress with an expired (or missing)
+        lease: its worker stopped and no live worker has reclaimed it.
       - Unhealthy if the latest successful sync is missing or older than
         FRESHNESS_WINDOW.
       - Otherwise healthy.
@@ -72,8 +74,9 @@ def item_status(plaid_item, now=None):
         last_error = None
 
     cur_job = SyncJob.objects.filter(plaid_item=plaid_item, status__in=[SyncJob.Status.QUEUED, SyncJob.Status.IN_PROGRESS]).order_by('-created_at').first()
-    if cur_job and cur_job.status == SyncJob.Status.IN_PROGRESS and (now - cur_job.started_at > STUCK_AFTER):
-        # in_progress too long
+    lease_expired = cur_job is not None and (cur_job.lease_expires_at is None or cur_job.lease_expires_at < now)
+    if cur_job and cur_job.status == SyncJob.Status.IN_PROGRESS and lease_expired:
+        # Its worker stopped renewing, and no live worker has reclaimed it (decision 030).
         healthy = False
         reason = Reason.JOB_STUCK
     else:
@@ -112,6 +115,7 @@ def _job_summary(job):
         'created_at': job.created_at,
         'started_at': job.started_at,
         'run_after': job.run_after,
+        'lease_expires_at': job.lease_expires_at,
     }
 
 

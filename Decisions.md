@@ -519,3 +519,54 @@ Architecture decisions for the Plaid sync pipeline. Each entry records what was 
 **Why:** With a handful of Items, the full list is small, and it already contains every Item's status, so a per-Item endpoint would duplicate it with no current consumer. The top-level flag gives an alert one yes/no to poll.
 
 **Tradeoffs accepted:** Cost grows with the number of Items per user; irrelevant at this scale. Requires authentication, so an external poller needs a session or a separate mechanism (milestone 8).
+
+---
+
+## 029. Fault injection: kill a worker mid-job, then race two workers
+
+**Date:** 2026-10-18
+
+**Options considered:**
+- Kill the worker mid-job
+- Race two workers on the same queue
+- Both
+
+**Chosen:** Both. The kill test runs first, before any fix, to record the real baseline behavior; it's then repeated after leases (030). The race runs with two worker containers. A frozen (not dead) worker is simulated with `docker pause` to exercise the zombie case.
+
+**Why:** Killing a worker is the failure most likely to break something real: a job left `in_progress` blocks its Item permanently under the one-active-job constraint (008). The race confirms `SKIP LOCKED` and the constraint hold under real concurrency rather than only in tests.
+
+**Tradeoffs accepted:** Exercises are manual, run once, and documented; they aren't automated in CI.
+
+---
+
+## 030. Recover stuck jobs with leases, fenced by attempt number
+
+**Date:** 2026-10-18
+
+**Options considered:**
+- Alert only; recover by hand
+- Leases: a claim expires unless the worker renews it
+- A reaper that re-queues jobs `in_progress` for too long
+
+**Chosen:** Leases. Claiming a job sets an expiry; the worker renews it as it makes progress; a job whose lease has expired can be claimed again as a new attempt.
+
+**Why:** A reaper can only judge by start time, so a slow but healthy job looks the same as a dead one. A lease is renewed by progress, so only a worker that has actually stopped loses its job. Re-running a job is safe because syncs are idempotent and the cursor is saved only at the end (014-016).
+
+**Tradeoffs accepted:** More moving parts than a reaper: a new column, renewal calls in the job code, and a claim query that also takes expired jobs. A frozen worker that wakes after losing its lease could still write; writes that matter are fenced by checking that the job's attempt number is still the one this worker claimed.
+
+---
+
+## 031. Alerting: an external dead-man's switch posting to Discord
+
+**Date:** 2026-10-18
+
+**Options considered:**
+- Check inside the worker loop
+- A separate alerting container
+- An external dead-man's-switch service that alerts when check-ins stop
+
+**Chosen:** The worker pings healthchecks.io once a minute from its main loop; healthchecks.io alerts a Discord channel when pings stop.
+
+**Why:** The most likely failure is the worker itself dying, and an alert sent from inside the worker can't report its own death. An external monitor catches every way the worker can stop: a crash, a kill, a stopped container, the host going down, and a job that hangs, since pings are only sent between jobs.
+
+**Tradeoffs accepted:** Depends on a third-party service and outbound network access. Doesn't report problems the worker is alive to see (a failing sync, drift); those remain visible through logs and the status endpoint (027).

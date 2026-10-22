@@ -45,6 +45,9 @@ def reconcile_item(plaid_item, job, attempt, window_days=RECONCILE_WINDOW_DAYS):
     attempt.save(update_fields=['step'])
     plaid_txns, plaid_accounts = fetch_plaid_window(plaid_item, start_date, end_date)
 
+    # Fetching can take several pages; confirm we still own the job before writing.
+    from app.jobs import renew_lease  # lazy: app.jobs imports this module lazily too
+    renew_lease(job)
     attempt.step = SyncJob.Step.UPDATE_DB
     attempt.save(update_fields=['step'])
     # Accounts first, so repairs never hit the upsert's missing-account skip.
@@ -187,7 +190,10 @@ def apply_repairs(job, user, missing, extra, mismatched):
             before=_local_snapshot(local_txn),
         ))
 
+    from app.jobs import renew_lease
     with transaction.atomic():
+        # Fenced (decision 030): repairs only commit if this worker still owns the job.
+        renew_lease(job)
         accounts = {}
         if missing:
             db.upsert_transactions(list(missing), accounts, user)

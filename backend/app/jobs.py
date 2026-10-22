@@ -51,6 +51,17 @@ TRANSIENT_NETWORK_ERRORS = (TimeoutError, NewConnectionError, ProtocolError)
 RECONCILE_INTERVAL = timedelta(hours=24)
 SYNC_INTERVAL = timedelta(hours=6)
 
+# Decision 030: how long a claim lasts without renewal. Renewals happen at least
+# once per page, and a page takes about a second, so this only expires when the
+# worker has actually stopped.
+LEASE_DURATION = timedelta(seconds=60)
+
+
+class LeaseLost(Exception):
+    """This worker no longer owns the job: its lease expired and another worker
+    claimed it (a new attempt), or the job is no longer in_progress. The worker
+    must stop and write nothing more for this job."""
+
 
 def _is_transient_network_error(exc):
     """True if exc is a network failure that a retry could plausibly fix.
@@ -171,8 +182,7 @@ def claim_next_job():
     with transaction.atomic():
         job = (
             SyncJob.objects
-            .filter(status=SyncJob.Status.QUEUED)
-            .filter(Q(run_after__isnull=True) | Q(run_after__lte=now))
+            .filter(_claimable(now))
             .order_by('created_at', 'id')
             .select_for_update(skip_locked=True)
             .first()
@@ -180,13 +190,38 @@ def claim_next_job():
         if job is None:
             return None
 
+        if job.status == SyncJob.Status.IN_PROGRESS:
+            # Reclaiming an abandoned job (decision 030): close the dead attempt
+            # and start a new one. The new attempt_number is the fencing token
+            # that makes any late writes from the old worker fail.
+            SyncAttempt.objects.filter(
+                job=job, attempt_number=job.attempt_number, outcome__isnull=True,
+            ).update(outcome=SyncAttempt.Outcome.LEASE_EXPIRED, finished_at=now)
+            log_event(logger, "lease_expired_reclaimed", level=logging.WARNING,
+                      job_id=job.id, item_id=job.plaid_item_id, kind=job.kind,
+                      abandoned_attempt=job.attempt_number, lease_expired_at=job.lease_expires_at)
+            job.attempt_number += 1
+            if job.attempt_number > MAX_ATTEMPTS:
+                # A job that keeps killing its worker (crash loop) must not be reclaimed forever.
+                job.status = SyncJob.Status.FAILED
+                job.error_code = 'LEASE_EXPIRED_MAX_ATTEMPTS'
+                job.error_message = f'Abandoned {MAX_ATTEMPTS} times'
+                job.completed_at = now
+                job.lease_expires_at = None
+                job.save(update_fields=['status', 'attempt_number', 'error_code',
+                                        'error_message', 'completed_at', 'lease_expires_at'])
+                log_event(logger, "job_failed", level=logging.ERROR, job_id=job.id,
+                          error_code=job.error_code)
+                return None
+
         job.status = SyncJob.Status.IN_PROGRESS
         job.started_at = now
+        job.lease_expires_at = now + LEASE_DURATION
         # Counts describe the latest attempt. A retry replays pages, so carrying
         # counts over from a failed attempt would double-count them.
         job.added_count = job.modified_count = job.removed_count = 0
         job.save(update_fields=[
-            'status', 'started_at',
+            'status', 'started_at', 'attempt_number', 'lease_expires_at',
             'added_count', 'modified_count', 'removed_count',
         ])
 
@@ -196,6 +231,48 @@ def claim_next_job():
             started_at=now,
         )
     return job
+
+
+# --- Leases (decision 030): Daniel writes these two -------------------------
+
+def _claimable(now):
+    """A Q() matching jobs a worker may claim right now:
+
+      - queued and due (run_after is null or has passed), as before, OR
+      - in_progress with a lease that has expired (its worker stopped renewing).
+
+    Keep it a filter: claim_next_job's ordering and SKIP LOCKED stay unchanged.
+    """
+    return Q(
+        Q(status=SyncJob.Status.QUEUED) &
+        (Q(run_after__isnull=True) | Q(run_after__lte=now))
+    ) | Q(
+        Q(status=SyncJob.Status.IN_PROGRESS) &
+        (Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
+    )
+
+
+def renew_lease(job):
+    """Extend this worker's lease to now + LEASE_DURATION, or raise LeaseLost.
+
+    The job is still ours only if, in the database right now, it is in_progress
+    AND its attempt_number equals job.attempt_number (the fencing token: a
+    reclaim increments it).
+
+    Must be ONE conditional UPDATE, not a read followed by a save: the check and
+    the write have to be atomic, or another worker can reclaim the job between
+    them. Called inside transaction.atomic() before writes that matter (cursor
+    save, outcome recording); the UPDATE's row lock then holds until commit,
+    and claim_next_job's SKIP LOCKED can't take the job in the meantime.
+    """
+    now = timezone.now()
+    updated = SyncJob.objects.filter(
+        pk=job.pk,
+        status=SyncJob.Status.IN_PROGRESS,
+        attempt_number=job.attempt_number,
+    ).update(lease_expires_at=now + LEASE_DURATION)
+    if updated == 0:
+        raise LeaseLost()
 
 
 def run_job(job):
@@ -230,22 +307,29 @@ def _run_job(job):
             from app.views import sync_item
             sync_item(job.plaid_item, job, attempt)
         _record_success(job, attempt)
+    except LeaseLost:
+        _log_lease_lost()
+        return
     except Exception as e:
         error_code, error_message = _describe_error(e)
 
         # Retry only allowlisted errors, and only if attempts remain (decisions 010, 013).
-        if is_retryable(e) and job.attempt_number < MAX_ATTEMPTS:
-            delay = compute_backoff(job.attempt_number)
-            _schedule_retry(job, attempt, error_code, error_message, delay)
-            log_event(logger, "retry_scheduled", level=logging.WARNING,
-                      error_code=error_code, error=error_message, delay_s=round(delay, 1))
-        else:
-            _record_failure(job, attempt, error_code, error_message)
-            # A traceback only for errors we can't name: those are usually our bugs.
-            log_event(logger, "job_failed", level=logging.ERROR,
-                      exc_info=e if error_code is None else None,
-                      error_code=error_code, error=error_message,
-                      retryable=is_retryable(e))
+        try:
+            if is_retryable(e) and job.attempt_number < MAX_ATTEMPTS:
+                delay = compute_backoff(job.attempt_number)
+                _schedule_retry(job, attempt, error_code, error_message, delay)
+                log_event(logger, "retry_scheduled", level=logging.WARNING,
+                          error_code=error_code, error=error_message, delay_s=round(delay, 1))
+            else:
+                _record_failure(job, attempt, error_code, error_message)
+                # A traceback only for errors we can't name: those are usually our bugs.
+                log_event(logger, "job_failed", level=logging.ERROR,
+                          exc_info=e if error_code is None else None,
+                          error_code=error_code, error=error_message,
+                          retryable=is_retryable(e))
+        except LeaseLost:
+            # Another worker owns the job now; its outcome is that worker's to record.
+            _log_lease_lost()
         return
 
     duration_s = None
@@ -255,19 +339,28 @@ def _run_job(job):
               modified=job.modified_count, removed=job.removed_count, duration_s=duration_s)
 
 
+def _log_lease_lost():
+    log_event(logger, "lease_lost", level=logging.WARNING,
+              detail="another worker reclaimed this job; stopping without writing")
+
+
 # --- Outcome recording: job and attempt are always updated together ---------
+# Each one first confirms (and locks) ownership with renew_lease, so a worker
+# that lost its lease can't overwrite the new owner's outcome.
 
 def _record_success(job, attempt):
     now = timezone.now()
     with transaction.atomic():
+        renew_lease(job)
         attempt.outcome = SyncAttempt.Outcome.COMPLETED
         attempt.finished_at = now
         attempt.save(update_fields=['outcome', 'finished_at'])
 
         job.status = SyncJob.Status.COMPLETED
         job.completed_at = now
+        job.lease_expires_at = None
         job.save(update_fields=[
-            'status', 'completed_at',
+            'status', 'completed_at', 'lease_expires_at',
             'added_count', 'modified_count', 'removed_count',
         ])
 
@@ -280,6 +373,7 @@ def _schedule_retry(job, attempt, error_code, error_message, delay_seconds):
     """
     now = timezone.now()
     with transaction.atomic():
+        renew_lease(job)
         attempt.outcome = SyncAttempt.Outcome.RETRY_SCHEDULED
         attempt.error_code = error_code
         attempt.error_message = error_message
@@ -289,8 +383,9 @@ def _schedule_retry(job, attempt, error_code, error_message, delay_seconds):
         job.status = SyncJob.Status.QUEUED
         job.attempt_number += 1
         job.run_after = now + timedelta(seconds=delay_seconds)
+        job.lease_expires_at = None
         job.save(update_fields=[
-            'status', 'attempt_number', 'run_after',
+            'status', 'attempt_number', 'run_after', 'lease_expires_at',
             'added_count', 'modified_count', 'removed_count',
         ])
 
@@ -299,6 +394,7 @@ def _record_failure(job, attempt, error_code, error_message):
     """Close this attempt as failed and fail the job permanently."""
     now = timezone.now()
     with transaction.atomic():
+        renew_lease(job)
         attempt.outcome = SyncAttempt.Outcome.FAILED
         attempt.error_code = error_code
         attempt.error_message = error_message
@@ -309,9 +405,10 @@ def _record_failure(job, attempt, error_code, error_message):
         job.error_code = error_code
         job.error_message = error_message
         job.completed_at = now
+        job.lease_expires_at = None
         # Counts are saved on failure too (decision 006): pages committed before the failure count.
         job.save(update_fields=[
-            'status', 'error_code', 'error_message', 'completed_at',
+            'status', 'error_code', 'error_message', 'completed_at', 'lease_expires_at',
             'added_count', 'modified_count', 'removed_count',
         ])
 

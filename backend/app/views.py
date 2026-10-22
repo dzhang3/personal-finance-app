@@ -51,7 +51,7 @@ from app.logging_utils import log_event
 logger = logging.getLogger(__name__)
 
 import app.db_methods as db
-from app.jobs import enqueue_sync
+from app.jobs import enqueue_sync, renew_lease
 
 load_dotenv()
 
@@ -303,6 +303,9 @@ def sync_item(plaid_item, job, attempt):
     cursor = plaid_item.cursor
     page = 1
     while True:
+        # Heartbeat (decision 030): proves this worker is alive, and stops a worker
+        # that lost the job before it fetches or writes anything more.
+        renew_lease(job)
         attempt.step = SyncJob.Step.FETCH_TRANSACTIONS
         attempt.save(update_fields=['step'])
         log_event(logger, "fetching_transactions", cursor=cursor, page=page, level=logging.DEBUG)
@@ -330,10 +333,21 @@ def sync_item(plaid_item, job, attempt):
 
         if not response['has_more']:
             break
+        # Fault injection only (decision 029): widens the window to kill or pause a
+        # worker mid-job. Unset (0) in normal runs.
+        fault_delay = float(os.getenv('FAULT_PAGE_DELAY_SECONDS', '0'))
+        if fault_delay:
+            log_event(logger, "fault_delay", level=logging.WARNING, seconds=fault_delay)
+            time.sleep(fault_delay)
         page += 1
     # Advance the cursor only after every page's writes succeeded (decision 016).
-    plaid_item.cursor = cursor
-    plaid_item.save(update_fields=['cursor'])
+    # Fenced (decision 030): a worker that lost its lease must not overwrite the
+    # cursor the new owner is about to save. renew_lease locks the job row until
+    # this transaction commits, so no reclaim can slip in between check and save.
+    with transaction.atomic():
+        renew_lease(job)
+        plaid_item.cursor = cursor
+        plaid_item.save(update_fields=['cursor'])
     log_event(logger, "cursor_saved", pages=page)
     
 @api_view(['GET'])

@@ -7,6 +7,7 @@ import time
 from django.core.management.base import BaseCommand
 from django.db import close_old_connections
 
+from app import heartbeat
 from app.jobs import claim_next_job, enqueue_due_reconciles, enqueue_due_syncs, run_job
 from app.logging_utils import job_context, log_event
 
@@ -51,6 +52,8 @@ class Command(BaseCommand):
 
             if last_schedule_check is None or time.monotonic() - last_schedule_check >= SCHEDULE_CHECK_SECONDS:
                 last_schedule_check = time.monotonic()
+                # Only reached between jobs, so a job that hangs also stops the pings.
+                heartbeat.ping()
                 # Syncs first: if both are due, the sync takes the Item's one
                 # active slot and the reconcile waits for a later check.
                 syncs = enqueue_due_syncs()
