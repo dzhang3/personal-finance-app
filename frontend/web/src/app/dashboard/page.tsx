@@ -12,15 +12,16 @@ export default function Dashboard() {
 
   useEffect(() => {
     const handleAuth = async () => {
-      try { 
-        if (!(await checkAuth())) {
-          router.push('/login');
+      try {
+        if (await checkAuth()) {
+          // Only render (and fetch data) once we know the user is logged in.
+          setIsLoading(false);
+        } else {
+          router.replace('/login');
         }
       } catch (error) {
         console.error('Auth check failed:', error);
-        router.push('/login');
-      } finally {
-        setIsLoading(false);
+        router.replace('/login');
       }
     };
 

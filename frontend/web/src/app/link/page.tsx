@@ -3,85 +3,74 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Container, Box, Typography, Button, CircularProgress, Alert } from '@mui/material';
-import { usePlaidLink, PlaidLinkOptions } from 'react-plaid-link';
-import { checkHasAccounts, checkAuth, exchangePublicToken, getLinkToken } from '@/services/apiService';
+import { usePlaidLink, PlaidLinkOnExit, PlaidLinkOnSuccess } from 'react-plaid-link';
+import { checkAuth, exchangePublicToken, getLinkToken, getSyncStatus } from '@/services/apiService';
 
 export default function LinkPage() {
   const router = useRouter();
   const [linkToken, setLinkToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [initFailed, setInitFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
-
-  
 
   useEffect(() => {
     const init = async () => {
       try {
-        const linkToken = await getLinkToken();
-        setLinkToken(linkToken);
+        // Check auth first so a logged-out user is redirected instead of seeing a link-token error.
+        if (!(await checkAuth())) {
+          router.replace('/login');
+          return;
+        }
+        setLinkToken(await getLinkToken());
+        setIsLoading(false);
       } catch (error) {
         console.error('Failed to create link token:', error);
-        setError('Failed to initialize bank connection');
-      } finally {
+        setInitFailed(true);
         setIsLoading(false);
       }
     };
 
     init();
-  }, []);
+  }, [router]);
 
   const goToDashboard = async () => {
     try {
-      const hasAccounts = await checkHasAccounts();
-      if (hasAccounts) {
+      const { items } = await getSyncStatus();
+      if (items.length > 0) {
         router.push('/dashboard');
       } else {
         setWarning('Please connect an account first.');
       }
     } catch (error) {
-      console.error('Error checking accounts:', error);
-      setError('An error occurred while checking accounts.');
+      console.error('Error checking linked accounts:', error);
+      setError('Could not check your linked accounts. Please try again.');
     }
   };
 
-  useEffect(() => {
-      const handleAuth = async () => {
-        try {
-          if (!(await checkAuth())) {
-            router.push('/login');
-          }
-        } catch (error) {
-          console.error('Auth check failed:', error);
-          router.push('/login');
-        }
-      };
-  
-      handleAuth();
-    }, [router]);
-
-  const onSuccess = async (public_token: string) => {
+  const onSuccess: PlaidLinkOnSuccess = async (public_token) => {
     try {
       setIsProcessing(true);
       setError(null);
-      
+      // Returns 202 once the Item is saved; the dashboard shows the first sync's progress.
       await exchangePublicToken(public_token);
-
       router.push('/dashboard');
     } catch (error) {
       console.error('Failed to exchange public token:', error);
-      setError('Failed to connect bank account');
+      setError('Failed to connect bank account. Please try again.');
       setIsProcessing(false);
     }
   };
 
-  const config: PlaidLinkOptions = {
-    token: linkToken!,
-    onSuccess,
+  const onExit: PlaidLinkOnExit = (plaidError) => {
+    // plaidError is null when the user simply closed Plaid Link.
+    if (plaidError) {
+      setError(plaidError.display_message || plaidError.error_message || 'Bank connection was interrupted.');
+    }
   };
 
-  const { open, ready } = usePlaidLink(config);
+  const { open, ready } = usePlaidLink({ token: linkToken, onSuccess, onExit });
 
   if (isLoading || isProcessing) {
     return (
@@ -90,7 +79,7 @@ export default function LinkPage() {
           <CircularProgress />
           {isProcessing && (
             <Typography sx={{ mt: 2 }}>
-              Connecting your account and fetching transactions...
+              Connecting your account...
             </Typography>
           )}
         </Box>
@@ -98,15 +87,15 @@ export default function LinkPage() {
     );
   }
 
-  if (error) {
+  if (initFailed) {
     return (
       <Container maxWidth="sm">
         <Box sx={{ my: 4, textAlign: 'center' }}>
           <Typography color="error" gutterBottom>
-            {error}
+            Failed to initialize bank connection
           </Typography>
-          <Button 
-            variant="contained" 
+          <Button
+            variant="contained"
             onClick={() => window.location.reload()}
             sx={{ mt: 2 }}
           >
@@ -136,22 +125,24 @@ export default function LinkPage() {
         <Typography variant="body1" sx={{ mb: 4 }}>
           To get started, connect your bank account using our secure integration with Plaid.
         </Typography>
-        <Button
-          variant="contained"
-          onClick={() => open()}
-          disabled={!ready}
-          size="large"
-        >
-          Connect Bank Account
-        </Button>
-        <Button
-          variant="outlined"
-          onClick={goToDashboard}
-          size="large"
-        >
-          Go to Dashboard
-        </Button>
+        <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center' }}>
+          <Button
+            variant="contained"
+            onClick={() => open()}
+            disabled={!ready}
+            size="large"
+          >
+            Connect Bank Account
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={goToDashboard}
+            size="large"
+          >
+            Go to Dashboard
+          </Button>
+        </Box>
       </Box>
     </Container>
   );
-} 
+}

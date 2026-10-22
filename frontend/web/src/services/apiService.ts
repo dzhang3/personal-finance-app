@@ -154,11 +154,6 @@ export const forceTransactionSync = async () => {
 
 export const getSyncStatus = () => request<SyncStatus>('sync_status/');
 
-export const checkHasAccounts = async (): Promise<boolean> => {
-    const data = await request<{ hasAccounts: boolean }>('check_has_accounts/', { method: 'POST' });
-    return data.hasAccounts;
-};
-
 // --- Transactions ---
 
 export const getTransactions = async (): Promise<Transaction[]> => {

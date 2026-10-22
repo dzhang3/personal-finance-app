@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { CircularProgress, Box } from '@mui/material';
-import { checkHasAccounts, checkAuth } from '@/services/apiService';
+import { checkAuth, getSyncStatus } from '@/services/apiService';
 
 export default function Home() {
   const router = useRouter();
@@ -11,21 +11,17 @@ export default function Home() {
   useEffect(() => {
     const handleAuth = async () => {
       try {
-        if (await checkAuth()) {
-          // Check if the user has linked accounts
-          console.log('calling checkHasAccounts');
-          const hasAccounts = await checkHasAccounts();
-          if (hasAccounts) {
-            router.push('/dashboard'); // Or wherever your main app page is
-          } else {
-            router.push('/link'); // Or wherever your Plaid link page is
-          }
-        } else {
-          router.push('/login');
+        if (!(await checkAuth())) {
+          router.replace('/login');
+          return;
         }
+        // A linked Item exists as soon as the token exchange returns, even before
+        // its first sync creates any accounts, so route on items rather than accounts.
+        const { items } = await getSyncStatus();
+        router.replace(items.length > 0 ? '/dashboard' : '/link');
       } catch (error) {
         console.error('Auth check failed:', error);
-        router.push('/login');
+        router.replace('/login');
       }
     };
 
