@@ -49,12 +49,13 @@ export default function LinkPage() {
     }
   };
 
-  const onSuccess: PlaidLinkOnSuccess = async (public_token) => {
+  const onSuccess: PlaidLinkOnSuccess = async (public_token, metadata) => {
     try {
       setIsProcessing(true);
       setError(null);
       // Returns 202 once the Item is saved; the dashboard shows the first sync's progress.
-      await exchangePublicToken(public_token);
+      // The bank's name only reaches us here, so pass it along for display.
+      await exchangePublicToken(public_token, metadata.institution?.name ?? null);
       router.push('/dashboard');
     } catch (error) {
       console.error('Failed to exchange public token:', error);

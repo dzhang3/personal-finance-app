@@ -198,7 +198,9 @@ def create_link_token(request):
 @permission_classes([IsAuthenticated])
 def exchange_public_token(request):
     public_token = request.data.get('public_token')
-    
+    # Display-only, from Plaid Link's onSuccess metadata. Optional; trimmed to fit the column.
+    institution_name = (request.data.get('institution_name') or '').strip()[:255] or None
+
     if not public_token:
         return JsonResponse({
             'error': 'public_token is required'
@@ -219,7 +221,8 @@ def exchange_public_token(request):
             plaid_item = PlaidItem.objects.create(
                 user=request.user,
                 item_id=item_id,
-                access_token=access_token
+                access_token=access_token,
+                institution_name=institution_name,
             )
     
             enqueue_sync(plaid_item)

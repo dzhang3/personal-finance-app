@@ -143,8 +143,11 @@ export const getLinkToken = async (): Promise<string> => {
 };
 
 // 202, no body: the first sync runs in the background.
-export const exchangePublicToken = async (publicToken: string) => {
-    await request('exchange_public_token/', { method: 'POST', body: { public_token: publicToken } });
+export const exchangePublicToken = async (publicToken: string, institutionName: string | null) => {
+    await request('exchange_public_token/', {
+        method: 'POST',
+        body: { public_token: publicToken, institution_name: institutionName },
+    });
 };
 
 // 202, no body: only queues jobs. Poll getSyncStatus to see them finish.
