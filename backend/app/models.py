@@ -54,6 +54,7 @@ class Transaction(models.Model):
     description = models.TextField(blank=True, null=True)
     # Plaid's personal_finance_category.primary, e.g. GENERAL_MERCHANDISE (19 chars).
     transaction_type = models.CharField(max_length=50)
+    transaction_type_is_custom = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     merchant_id = models.CharField(max_length=255, blank=True, null=True)
     merchant_name = models.CharField(max_length=255, blank=True, null=True)

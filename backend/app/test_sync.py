@@ -163,6 +163,29 @@ def test_modified_overwrites_existing_row(user, existing_transaction):
 
 
 @pytest.mark.django_db
+def test_sync_preserves_user_custom_transaction_type(user, existing_transaction):
+    existing_transaction.transaction_type = "CUSTOM_CATEGORY"
+    existing_transaction.transaction_type_is_custom = True
+    existing_transaction.save(update_fields=["transaction_type", "transaction_type_is_custom"])
+
+    db.update_transactions(user, make_page(modified=[make_txn("txn_pending_1", amount=99.0)]))
+
+    txn = Transaction.objects.get(transaction_id="txn_pending_1")
+    assert txn.amount == Decimal("99.00")
+    assert txn.transaction_type == "CUSTOM_CATEGORY"
+    assert txn.transaction_type_is_custom is True
+
+
+@pytest.mark.django_db
+def test_sync_updates_automatic_transaction_type(user, existing_transaction):
+    db.update_transactions(user, make_page(modified=[make_txn("txn_pending_1", amount=99.0)]))
+
+    txn = Transaction.objects.get(transaction_id="txn_pending_1")
+    assert txn.transaction_type == "FOOD_AND_DRINK"
+    assert txn.transaction_type_is_custom is False
+
+
+@pytest.mark.django_db
 def test_failure_mid_pagination_then_retry_has_no_duplicates_or_gaps(
     user, account, plaid_item, job_and_attempt, fake_plaid
 ):

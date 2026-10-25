@@ -62,3 +62,36 @@ def test_owner_can_edit_and_delete():
     delete = client.delete(reverse("delete_transaction"), {"transaction_id": "txn_owner"}, format="json")
     assert delete.status_code == 200
     assert not Transaction.objects.filter(transaction_id="txn_owner").exists()
+
+
+@pytest.mark.django_db
+def test_changing_transaction_type_marks_it_as_custom():
+    owner = make_transaction("category_owner", "txn_category")
+    client = client_for(owner)
+
+    response = client.post(
+        reverse("edit_transaction"),
+        {"transaction_id": "txn_category", "new_category": "GROCERIES"},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    txn = Transaction.objects.get(transaction_id="txn_category")
+    assert txn.transaction_type == "GROCERIES"
+    assert txn.transaction_type_is_custom is True
+
+
+@pytest.mark.django_db
+def test_editing_other_fields_does_not_mark_category_as_custom():
+    owner = make_transaction("amount_owner", "txn_amount")
+    client = client_for(owner)
+
+    response = client.post(
+        reverse("edit_transaction"),
+        {"transaction_id": "txn_amount", "new_amount": "20.00"},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    txn = Transaction.objects.get(transaction_id="txn_amount")
+    assert txn.transaction_type_is_custom is False

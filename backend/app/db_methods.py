@@ -9,6 +9,8 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 import logging
+from django.db import transaction as db_transaction
+from django.db.models import Case, CharField, Value, When
 from app.logging_utils import log_event
 logger = logging.getLogger(__name__)
 
@@ -72,8 +74,30 @@ def upsert_transactions(transactions_data, accounts, user):
         )
         transactions.append(transaction_obj)
 
-    # Bulk create transactions
-    Transaction.objects.bulk_create(transactions, update_conflicts=True, unique_fields=['transaction_id'], update_fields=['account', 'amount', 'description', 'merchant_name', 'datetime', 'posted_date', 'transaction_type', 'payment_channel'])
+    # Keep user category overrides on conflicts. New rows receive Plaid's category;
+    # existing automatic categories are updated after the upsert, conditionally in SQL.
+    with db_transaction.atomic():
+        Transaction.objects.bulk_create(
+            transactions,
+            update_conflicts=True,
+            unique_fields=['transaction_id'],
+            update_fields=['account', 'amount', 'description', 'merchant_name', 'datetime', 'posted_date', 'payment_channel'],
+        )
+        category_updates = [
+            When(transaction_id=txn.transaction_id, then=Value(txn.transaction_type))
+            for txn in transactions
+        ]
+        if category_updates:
+            Transaction.objects.filter(
+                transaction_id__in=[txn.transaction_id for txn in transactions],
+                transaction_type_is_custom=False,
+            ).update(
+                transaction_type=Case(
+                    *category_updates,
+                    default=Value('UNCATEGORIZED'),
+                    output_field=CharField(),
+                )
+            )
     log_event(logger, "transactions_upserted", level=logging.DEBUG, count=len(transactions))
     return True
 

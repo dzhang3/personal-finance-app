@@ -500,6 +500,8 @@ def edit_transaction(request):
         if new_amount:
             transaction.amount = new_amount
         if new_category:
+            if new_category != transaction.transaction_type:
+                transaction.transaction_type_is_custom = True
             transaction.transaction_type = new_category
 
         transaction.save()
