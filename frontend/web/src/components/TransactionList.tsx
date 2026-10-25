@@ -3,6 +3,7 @@ import { getTransactions, editTransaction, deleteTransaction, Transaction } from
 import { formatCategory, formatCurrency, formatTransactionAmount, summarizeSpending } from '@/lib/finance';
 import { formatDateTime, getTimeFrameRange, isInTimeFrame, TimeFrame, timeFrameLabels, toDayKey } from '@/lib/dates';
 import { transactionsToCsv } from '@/lib/csv';
+import { filterTransactions } from '@/lib/transactionFilters';
 import { validateTransactionEdit } from '@/lib/transactionEdits';
 import {
   Alert,
@@ -143,6 +144,7 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [timeFrame, setTimeFrame] = useState<TimeFrame>('month');
+  const [search, setSearch] = useState('');
   const [filters, setFilters] = useState<FilterState>({
     category: '',
     minAmount: '',
@@ -196,22 +198,8 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
   );
 
   const filteredTransactions = useMemo(() => {
-    let filtered = transactions;
-
-    if (filters.category) {
-      filtered = filtered.filter(t => t.transaction_type === filters.category);
-    }
-
-    // Empty means unbounded; amounts can be negative (refunds, income).
-    const minAmount = filters.minAmount ? parseFloat(filters.minAmount) : -Infinity;
-    const maxAmount = filters.maxAmount ? parseFloat(filters.maxAmount) : Infinity;
-
-    if (filters.minAmount || filters.maxAmount) {
-      filtered = filtered.filter(t => t.amount >= minAmount && t.amount <= maxAmount);
-    }
-
-    return filtered;
-  }, [transactions, filters]);
+    return filterTransactions(transactions, { ...filters, search });
+  }, [transactions, filters, search]);
 
   // Slider range: whole dollars covering every amount in the time frame, always including 0.
   const amountBounds = useMemo((): [number, number] => {
@@ -246,11 +234,13 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
       minAmount: '',
       maxAmount: ''
     });
+    setSearch('');
   };
 
+  const hasSearch = Boolean(search.trim());
   const hasAmountFilter = Boolean(filters.minAmount || filters.maxAmount);
   // The amount range counts as one filter.
-  const activeFiltersCount = (filters.category ? 1 : 0) + (hasAmountFilter ? 1 : 0);
+  const activeFiltersCount = (hasSearch ? 1 : 0) + (filters.category ? 1 : 0) + (hasAmountFilter ? 1 : 0);
 
   const handleEditTransaction = async (transactionId: string) => {
     const edit = validateTransactionEdit(editValue, editAmount);
@@ -316,7 +306,16 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
         <Typography variant="h5">
           Recent Transactions
         </Typography>
-        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
+          <TextField
+            size="small"
+            label="Search transactions"
+            placeholder="Merchant, description, account"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            inputProps={{ 'aria-label': 'Search transactions' }}
+            sx={{ minWidth: { xs: '100%', sm: 260 } }}
+          />
           <Button
             variant="outlined"
             startIcon={<DownloadIcon />}
@@ -375,6 +374,13 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
       {/* Active Filters */}
       {activeFiltersCount > 0 && (
         <Stack direction="row" spacing={1} sx={{ mb: 3, flexWrap: 'wrap', gap: 1 }}>
+          {hasSearch && (
+            <Chip
+              label={`Search: ${search.trim()}`}
+              onDelete={() => setSearch('')}
+              size="small"
+            />
+          )}
           {filters.category && (
             <Chip 
               label={`Category: ${formatCategory(filters.category)}`}
@@ -528,11 +534,22 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
       )}
 
       {filteredTransactions.length === 0 ? (
-        <Typography align="center" color="textSecondary" sx={{ my: 4 }}>
-          {isSyncing && allTransactions.length === 0
-            ? 'Your transactions are syncing. They will appear here when the sync finishes.'
-            : 'No transactions found'}
-        </Typography>
+        <Box sx={{ my: 4, textAlign: 'center' }}>
+          <Typography color="textSecondary">
+            {allTransactions.length === 0
+              ? isSyncing
+                ? 'Your transactions are syncing. They will appear here when the sync finishes.'
+                : 'No transactions yet. Link an account or sync to load transactions.'
+              : transactions.length === 0
+                ? 'No transactions in this time frame.'
+                : 'No transactions match your search and filters.'}
+          </Typography>
+          {transactions.length > 0 && filteredTransactions.length === 0 && activeFiltersCount > 0 && (
+            <Button onClick={clearFilters} sx={{ mt: 1 }}>
+              Clear search and filters
+            </Button>
+          )}
+        </Box>
       ) : (
         <List>
           {filteredTransactions.map((transaction) => {
