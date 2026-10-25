@@ -3,6 +3,7 @@ import { forceTransactionSync, getSyncStatus, SyncStatus } from '@/services/apiS
 
 const POLL_FAST_MS = 3_000;
 const POLL_SLOW_MS = 30_000;
+const POLL_IDLE_MS = 5 * 60_000;
 // Syncs normally finish in seconds; a job still active after this is likely
 // waiting out a retry backoff, so stop hammering the endpoint.
 const FAST_POLL_WINDOW_MS = 60_000;
@@ -12,7 +13,8 @@ export const isSyncBusy = (status: SyncStatus | null) =>
   !!status?.items.some(item => item.current_job && item.reason !== 'job_stuck');
 
 /**
- * Loads /api/sync_status/ and polls it while any Item has an active job.
+ * Loads /api/sync_status/, polling actively queued work frequently and checking
+ * occasionally while idle so scheduled syncs appear without a page reload.
  * Calls onSyncFinished when jobs go from active to done, so callers can refetch data.
  */
 export function useSyncStatus(onSyncFinished: () => void) {
@@ -54,7 +56,8 @@ export function useSyncStatus(onSyncFinished: () => void) {
   useEffect(() => {
     if (!wasBusy.current) {
       busySince.current = null;
-      return;
+      const timer = setTimeout(load, POLL_IDLE_MS);
+      return () => clearTimeout(timer);
     }
     busySince.current ??= Date.now();
     const delay = Date.now() - busySince.current > FAST_POLL_WINDOW_MS ? POLL_SLOW_MS : POLL_FAST_MS;

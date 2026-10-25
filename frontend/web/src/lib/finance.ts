@@ -40,7 +40,7 @@ export const formatCurrency = (amount: number): string => currencyFormatter.form
 
 // For a single transaction, shown the way a bank statement does: money out is negative.
 export const formatTransactionAmount = (amount: number): string =>
-  amount > 0 ? `-${formatCurrency(amount)}` : `+${formatCurrency(-amount)}`;
+  amount > 0 ? `-${formatCurrency(amount)}` : amount < 0 ? `+${formatCurrency(-amount)}` : formatCurrency(0);
 
 // FOOD_AND_DRINK -> Food and drink
 export const formatCategory = (category: string): string => {

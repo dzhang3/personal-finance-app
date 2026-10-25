@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getTransactions, editTransaction, deleteTransaction, Transaction } from '@/services/apiService';
 import { formatCategory, formatCurrency, formatTransactionAmount, summarizeSpending } from '@/lib/finance';
-import { formatDateTime, getTimeFrameRange, isInTimeFrame, TimeFrame, timeFrameLabels } from '@/lib/dates';
+import { formatDateTime, getTimeFrameRange, isInTimeFrame, TimeFrame, timeFrameLabels, toDayKey } from '@/lib/dates';
+import { transactionsToCsv } from '@/lib/csv';
+import { validateTransactionEdit } from '@/lib/transactionEdits';
 import {
   Alert,
   List,
@@ -29,6 +31,8 @@ import CloseIcon from '@mui/icons-material/Close';
 import FilterListIcon from '@mui/icons-material/FilterList';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
+import MoreVertIcon from '@mui/icons-material/MoreVert';
+import DownloadIcon from '@mui/icons-material/Download';
 
 
 // Plaid personal_finance_category primaries, plus the backend's fallback.
@@ -135,6 +139,7 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
   // The only stored copy of the data; every list below is derived from it.
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
+  const [retryCount, setRetryCount] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [timeFrame, setTimeFrame] = useState<TimeFrame>('month');
@@ -178,7 +183,7 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
 
     fetchTransactions();
     return () => { cancelled = true; };
-  }, [reloadKey]);
+  }, [reloadKey, retryCount]);
 
   const transactions = useMemo(() => {
     const range = getTimeFrameRange(timeFrame);
@@ -248,17 +253,17 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
   const activeFiltersCount = (filters.category ? 1 : 0) + (hasAmountFilter ? 1 : 0);
 
   const handleEditTransaction = async (transactionId: string) => {
-    const amount = Number(editAmount);
-    if (editAmount.trim() === '' || !Number.isFinite(amount)) {
-      setActionError('Amount must be a number.');
+    const edit = validateTransactionEdit(editValue, editAmount);
+    if (!edit.ok) {
+      setActionError(edit.error);
       return;
     }
     try {
-      await editTransaction(transactionId, editValue, editAmount, editCategory);
+      await editTransaction(transactionId, edit.name, String(edit.amount), editCategory);
       setAllTransactions((prev) =>
         prev.map((t) =>
           t.transaction_id === transactionId
-            ? { ...t, merchant_name: editValue, amount, transaction_type: editCategory }
+            ? { ...t, merchant_name: edit.name, amount: edit.amount, transaction_type: editCategory }
             : t
         )
       );
@@ -268,6 +273,19 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
       console.error('Failed to edit transaction:', err);
       setActionError(`Failed to save changes: ${err instanceof Error ? err.message : 'unknown error'}`);
     }
+  };
+
+  const handleExportCsv = () => {
+    const csv = transactionsToCsv(filteredTransactions);
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `transactions-${toDayKey(new Date())}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
   const handleDeleteTransaction = async (transactionId: string) => {
@@ -294,11 +312,20 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
 
   return (
     <Paper elevation={2} sx={{ maxWidth: 800, mx: 'auto', mt: 4, p: 2 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 2, mb: 3, flexWrap: 'wrap' }}>
         <Typography variant="h5">
           Recent Transactions
         </Typography>
-        <Box sx={{ display: 'flex', gap: 2 }}>
+        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={handleExportCsv}
+            disabled={filteredTransactions.length === 0}
+            size="small"
+          >
+            Export CSV
+          </Button>
           <FormControl sx={{ minWidth: 150 }}>
             <InputLabel id="time-frame-label">Time Frame</InputLabel>
             <Select
@@ -327,7 +354,15 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
       </Box>
 
       {loadError && (
-        <Alert severity="error" sx={{ mb: 2 }}>
+        <Alert
+          severity="error"
+          sx={{ mb: 2 }}
+          action={
+            <Button color="inherit" size="small" onClick={() => setRetryCount(count => count + 1)}>
+              Retry
+            </Button>
+          }
+        >
           {loadError}
         </Alert>
       )}
@@ -506,12 +541,10 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
               <ListItem
                 key={transaction.transaction_id}
                 divider
-                // While editing, clicks belong to the form fields, not the row toggle.
-                onClick={editingId === transaction.transaction_id ? undefined : () => handleTransactionClick(transaction.transaction_id)}
-                sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 2, cursor: 'pointer' }}
+                sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 2 }}
               >
                 {editingId === transaction.transaction_id ? (
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1, flexWrap: 'wrap' }}>
                     <TextField
                       value={editValue}
                       onChange={(e) => setEditValue(e.target.value)}
@@ -550,8 +583,8 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
                     </Button>
                   </Box>
                 ) : (
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                    <Box>
+                  <Box sx={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto 112px', alignItems: 'center', gap: 1, width: '100%' }}>
+                    <Box sx={{ minWidth: 0 }}>
                       <ListItemText
                         primary={transaction.merchant_name || transaction.description}
                         secondary={
@@ -583,21 +616,31 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
                     </Box>
                     <Typography
                       variant="body1"
-                      color={transaction.amount > 0 ? 'text.primary' : 'success.main'}
-                      sx={{ fontWeight: 'medium', whiteSpace: 'nowrap' }}
+                      style={{ color: transaction.amount > 0 ? '#d32f2f' : '#2e7d32' }}
+                      sx={{ fontWeight: 'medium', whiteSpace: 'nowrap', textAlign: 'right' }}
                     >
                       {formatTransactionAmount(transaction.amount)}
                     </Typography>
-                    {activeTransactionId === transaction.transaction_id && (
-                      <Box sx={{ textAlign: 'right', minWidth: 80, display: 'flex', gap: 1 }}>
+                    <Box sx={{ width: 112, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 0.5 }}>
+                      <IconButton
+                        onClick={() => handleTransactionClick(transaction.transaction_id)}
+                        size="small"
+                        aria-label={`Transaction actions for ${transaction.merchant_name || transaction.description}`}
+                        aria-expanded={activeTransactionId === transaction.transaction_id}
+                      >
+                        {activeTransactionId === transaction.transaction_id ? <CloseIcon /> : <MoreVertIcon />}
+                      </IconButton>
+                      {activeTransactionId === transaction.transaction_id && (
+                        <>
                         <IconButton onClick={() => handleEditClick(transaction)} size="small" aria-label="Edit transaction">
                           <EditIcon />
                         </IconButton>
                         <IconButton onClick={() => handleDeleteTransaction(transaction.transaction_id)} size="small" aria-label="Delete transaction">
                           <DeleteIcon />
                         </IconButton>
-                      </Box>
-                    )}
+                        </>
+                      )}
+                    </Box>
                   </Box>
                 )}
               </ListItem>
