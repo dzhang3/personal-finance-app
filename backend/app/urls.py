@@ -13,7 +13,6 @@ urlpatterns = [
     path('auth/check/', views.check_auth, name='check_auth'),
     
     # Existing endpoints
-    path('check_user_exists/', views.check_user_exists, name='check_user_exists'),
     path('check_has_accounts/', views.has_accounts, name='check_has_accounts'),
     path('create_link_token/', views.create_link_token, name='create_link_token'),
     path('exchange_public_token/', views.exchange_public_token, name='exchange_public_token'),
@@ -21,7 +20,6 @@ urlpatterns = [
     path('get_transactions/', views.get_transactions, name='get_transactions'),
     path('budget_targets/', views.budget_targets, name='budget_targets'),
     path('get_liabilities/', views.get_liabilities, name='get_liabilities'),
-    path('create_user/', views.create_user, name='create_user'),
     path('get_accounts/', views.get_accounts, name='get_accounts'),
     path('force_transaction_sync/', views.force_transaction_sync, name='force_transaction_sync'),
     path('sync_status/', views.sync_status, name='sync_status'),

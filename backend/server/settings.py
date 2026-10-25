@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 
 from pathlib import Path
 import os
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -21,10 +22,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-0qzorzy*)8e)1u7__2bs@p-^6yh%=^^lq(=&5c7f)&x@&ojr04'
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
+if not SECRET_KEY:
+    raise ImproperlyConfigured('DJANGO_SECRET_KEY must be configured.')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('PRODUCTION', 'False') != 'True'
+PRODUCTION = os.getenv('PRODUCTION', 'False').lower() == 'true'
+DEBUG = os.getenv('DJANGO_DEBUG', 'False').lower() == 'true'
+if PRODUCTION and DEBUG:
+    raise ImproperlyConfigured('DJANGO_DEBUG must be false when PRODUCTION is enabled.')
 
 ALLOWED_HOSTS = ['personal-finance-app-opa9.onrender.com','localhost', '127.0.0.1']
 
@@ -187,8 +193,9 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 # Add session settings
-SESSION_COOKIE_SAMESITE = 'None' if os.getenv('PRODUCTION', 'False') == 'True' else 'Lax'
-CSRF_COOKIE_SAMESITE = 'None' if os.getenv('PRODUCTION', 'False') == 'True' else 'Lax'
-SESSION_COOKIE_SECURE = os.getenv('PRODUCTION', 'False') == 'True'  # Set to True in production with HTTPS
-CSRF_COOKIE_SECURE = os.getenv('PRODUCTION', 'False') == 'True'    # Set to True in production with HTTPS
-SESSION_COOKIE_HTTPONLY = os.getenv('PRODUCTION', 'False') != 'True'  # Set to False in production with HTTPS
+SESSION_COOKIE_SAMESITE = 'None' if PRODUCTION else 'Lax'
+CSRF_COOKIE_SAMESITE = 'None' if PRODUCTION else 'Lax'
+SESSION_COOKIE_SECURE = PRODUCTION
+CSRF_COOKIE_SECURE = PRODUCTION
+# The frontend reads only the CSRF cookie; session credentials stay inaccessible to JavaScript.
+SESSION_COOKIE_HTTPONLY = True
