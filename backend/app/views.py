@@ -7,8 +7,9 @@ from datetime import date, timedelta, datetime
 import uuid
 import traceback
 import logging
+from decimal import Decimal, InvalidOperation
 
-from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending, PlaidItem, SyncJob
+from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending, PlaidItem, SyncJob, BudgetTarget
 
 from django.shortcuts import render
 from django.http import JsonResponse
@@ -270,6 +271,53 @@ def get_transactions(request):
     return JsonResponse({
         'transactions': transactions
     })
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def budget_targets(request):
+    if request.method == 'GET':
+        targets = BudgetTarget.objects.filter(user=request.user).order_by('category')
+        return Response({
+            'targets': [
+                {'category': target.category, 'monthly_limit': str(target.monthly_limit)}
+                for target in targets
+            ],
+        })
+
+    category = request.data.get('category', '')
+    if not isinstance(category, str):
+        return Response({'error': 'Category must be a string'}, status=status.HTTP_400_BAD_REQUEST)
+    category = category.strip()
+    if len(category) > 50:
+        return Response({'error': 'Category must be 50 characters or fewer'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if request.method == 'DELETE':
+        BudgetTarget.objects.filter(user=request.user, category=category).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    raw_limit = request.data.get('monthly_limit')
+    try:
+        monthly_limit = Decimal(str(raw_limit))
+    except (InvalidOperation, TypeError, ValueError):
+        return Response({'error': 'Monthly limit must be a positive amount'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not monthly_limit.is_finite() or monthly_limit <= 0 or monthly_limit.as_tuple().exponent < -2:
+        return Response({'error': 'Monthly limit must be a positive amount with at most two decimal places'}, status=status.HTTP_400_BAD_REQUEST)
+    if monthly_limit >= Decimal('10000000000'):
+        return Response({'error': 'Monthly limit is too large'}, status=status.HTTP_400_BAD_REQUEST)
+    monthly_limit = monthly_limit.quantize(Decimal('0.01'))
+
+    target, _ = BudgetTarget.objects.update_or_create(
+        user=request.user,
+        category=category,
+        defaults={'monthly_limit': monthly_limit},
+    )
+    return Response({
+        'category': target.category,
+        'monthly_limit': format(target.monthly_limit, '.2f'),
+    }, status=status.HTTP_200_OK)
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

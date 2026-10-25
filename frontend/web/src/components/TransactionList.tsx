@@ -5,6 +5,7 @@ import { formatDateTime, getTimeFrameRange, isInTimeFrame, TimeFrame, timeFrameL
 import { transactionsToCsv } from '@/lib/csv';
 import { filterTransactions } from '@/lib/transactionFilters';
 import { validateTransactionEdit } from '@/lib/transactionEdits';
+import BudgetPanel from '@/components/BudgetPanel';
 import {
   Alert,
   List,
@@ -485,6 +486,8 @@ export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: 
           </Typography>
         </Box>
       </Box>
+
+      <BudgetPanel transactions={allTransactions} />
 
       {/* Spending Categories Pie Chart */}
       {pieData.length > 0 && (

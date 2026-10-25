@@ -29,6 +29,10 @@ validation, and CSV formatting.
 Transaction categories changed in the dashboard are saved as user overrides and
 are preserved when Plaid syncs or reconciles the transaction later.
 
+Monthly spending targets are optional and saved per account. Set an overall
+target, category targets, both, or neither; targets reset each month without
+rollover.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

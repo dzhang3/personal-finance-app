@@ -19,6 +19,7 @@ urlpatterns = [
     path('exchange_public_token/', views.exchange_public_token, name='exchange_public_token'),
     path('get_item/', views.get_item, name='get_item'),
     path('get_transactions/', views.get_transactions, name='get_transactions'),
+    path('budget_targets/', views.budget_targets, name='budget_targets'),
     path('get_liabilities/', views.get_liabilities, name='get_liabilities'),
     path('create_user/', views.create_user, name='create_user'),
     path('get_accounts/', views.get_accounts, name='get_accounts'),

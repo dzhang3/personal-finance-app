@@ -89,6 +89,19 @@ class MonthlySpending(models.Model):
     amount_spent_transportation = models.DecimalField(max_digits=12, decimal_places=2)
     amount_spent_misc = models.DecimalField(max_digits=12, decimal_places=2)
 
+
+class BudgetTarget(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='budget_targets')
+    # Empty category represents the optional overall monthly target.
+    category = models.CharField(max_length=50, blank=True, default='')
+    monthly_limit = models.DecimalField(max_digits=12, decimal_places=2)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'category'], name='unique_budget_target_per_user_category'),
+        ]
+
+
 class PlaidItem(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     item_id = models.CharField(max_length=255, unique=True)

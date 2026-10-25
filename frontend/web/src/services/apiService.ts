@@ -17,6 +17,11 @@ export interface Transaction {
     };
 }
 
+export interface BudgetTarget {
+    category: string;
+    monthly_limit: string;
+}
+
 export type SyncReason = 'ok' | 'job_stuck' | 'never_synced' | 'stale';
 
 export interface SyncJob {
@@ -162,6 +167,22 @@ export const getSyncStatus = () => request<SyncStatus>('sync_status/');
 export const getTransactions = async (): Promise<Transaction[]> => {
     const data = await request<{ transactions: Transaction[] }>('get_transactions/');
     return data.transactions;
+};
+
+export const getBudgetTargets = async (): Promise<BudgetTarget[]> => {
+    const data = await request<{ targets: BudgetTarget[] }>('budget_targets/');
+    return data.targets;
+};
+
+export const saveBudgetTarget = async (category: string, monthlyLimit: string): Promise<BudgetTarget> => {
+    return request<BudgetTarget>('budget_targets/', {
+        method: 'PUT',
+        body: { category, monthly_limit: monthlyLimit },
+    });
+};
+
+export const deleteBudgetTarget = async (category: string): Promise<void> => {
+    await request<void>('budget_targets/', { method: 'DELETE', body: { category } });
 };
 
 export const editTransaction = async (transactionId: string, new_name: string, new_amount: string, new_category: string) => {
