@@ -7,8 +7,9 @@ from datetime import date, timedelta, datetime
 import uuid
 import traceback
 import logging
+from decimal import Decimal, InvalidOperation
 
-from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending
+from app.models import User, Account, Transaction, SavingsGoal, Paycheck, MonthlySpending, PlaidItem, SyncJob, BudgetTarget
 
 from django.shortcuts import render
 from django.http import JsonResponse
@@ -21,6 +22,7 @@ from django.middleware.csrf import get_token
 from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import status
 from django.forms.models import model_to_dict
+from django.db import transaction
 
 from dotenv import load_dotenv
 import plaid
@@ -45,7 +47,12 @@ from plaid.model.liabilities_get_request import LiabilitiesGetRequest
 
 from plaid.api import plaid_api
 
+import logging
+from app.logging_utils import log_event
+logger = logging.getLogger(__name__)
+
 import app.db_methods as db
+from app.jobs import enqueue_sync, renew_lease
 
 load_dotenv()
 
@@ -191,9 +198,10 @@ def create_link_token(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def exchange_public_token(request):
-    global access_token
     public_token = request.data.get('public_token')
-    
+    # Display-only, from Plaid Link's onSuccess metadata. Optional; trimmed to fit the column.
+    institution_name = (request.data.get('institution_name') or '').strip()[:255] or None
+
     if not public_token:
         return JsonResponse({
             'error': 'public_token is required'
@@ -208,12 +216,19 @@ def exchange_public_token(request):
         exchange_response = exchange_response if isinstance(exchange_response, dict) else exchange_response.to_dict()
 
         access_token = exchange_response['access_token']
-        print('access_token: %s' % access_token)        
-        # Add a delay to allow Plaid to gather transaction data
-        time.sleep(30)  # 30 second delay
+        item_id = exchange_response['item_id']
+
+        with transaction.atomic():
+            plaid_item = PlaidItem.objects.create(
+                user=request.user,
+                item_id=item_id,
+                access_token=access_token,
+                institution_name=institution_name,
+            )
+    
+            enqueue_sync(plaid_item)
         
-        update_transactions_and_accounts_for_access_token(access_token, request.user)
-        return JsonResponse(exchange_response)
+        return Response(status=status.HTTP_202_ACCEPTED)
     except plaid.ApiException as e:
         return JsonResponse(json.loads(e.body), status=500)
     except Exception as e:
@@ -257,104 +272,134 @@ def get_transactions(request):
         'transactions': transactions
     })
 
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def budget_targets(request):
+    if request.method == 'GET':
+        targets = BudgetTarget.objects.filter(user=request.user).order_by('category')
+        return Response({
+            'targets': [
+                {'category': target.category, 'monthly_limit': str(target.monthly_limit)}
+                for target in targets
+            ],
+        })
+
+    category = request.data.get('category', '')
+    if not isinstance(category, str):
+        return Response({'error': 'Category must be a string'}, status=status.HTTP_400_BAD_REQUEST)
+    category = category.strip()
+    if len(category) > 50:
+        return Response({'error': 'Category must be 50 characters or fewer'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if request.method == 'DELETE':
+        BudgetTarget.objects.filter(user=request.user, category=category).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    raw_limit = request.data.get('monthly_limit')
+    try:
+        monthly_limit = Decimal(str(raw_limit))
+    except (InvalidOperation, TypeError, ValueError):
+        return Response({'error': 'Monthly limit must be a positive amount'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not monthly_limit.is_finite() or monthly_limit <= 0 or monthly_limit.as_tuple().exponent < -2:
+        return Response({'error': 'Monthly limit must be a positive amount with at most two decimal places'}, status=status.HTTP_400_BAD_REQUEST)
+    if monthly_limit >= Decimal('10000000000'):
+        return Response({'error': 'Monthly limit is too large'}, status=status.HTTP_400_BAD_REQUEST)
+    monthly_limit = monthly_limit.quantize(Decimal('0.01'))
+
+    target, _ = BudgetTarget.objects.update_or_create(
+        user=request.user,
+        category=category,
+        defaults={'monthly_limit': monthly_limit},
+    )
+    return Response({
+        'category': target.category,
+        'monthly_limit': format(target.monthly_limit, '.2f'),
+    }, status=status.HTTP_200_OK)
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def force_transaction_sync(request):
-    # get accounts associated to user
-    accounts = Account.objects.filter(user=request.user)
-    if len(accounts) == 0:
-        print('No accounts found for user')
-        return JsonResponse({
-            'error': 'No accounts found for user',
-            'transactions': []
-        })
-    # get unique access tokens from accounts
-    for acc in accounts:
-        print('account:', model_to_dict(acc))
-    access_tokens = set([acc.access_token for acc in accounts])
-    for access_token in access_tokens:
-        update_transactions_and_accounts_for_access_token(access_token, request.user)
-    print('Transactions synced for all accounts')
-    return JsonResponse({
-        'success': True
-    })
+    plaid_items = PlaidItem.objects.filter(user=request.user)
+    for plaid_item in plaid_items:
+        enqueue_sync(plaid_item)
 
-def update_transactions_and_accounts_for_access_token(access_token, user):
-    try:
-        while True:
-            try:
-                response = send_transaction_request(access_token)
-                if 'error' in response:
-                    print('Error in transaction sync:', response['error'])
-                    return False
-                accounts = response['accounts']
+    print('Sync jobs queued for user:', request.user.id)
+    return Response(status=status.HTTP_202_ACCEPTED)
 
-                print('updating accounts')
-                db.update_accounts(user, access_token, accounts)
-                
-                print('updating cursor')
-                db.update_cursor(user, access_token, response['next_cursor'])
-                
-                print('updating transactions')
-                db.update_transactions(user, response)
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sync_status(request):
+    """Health of every linked Item for this user (decisions 026-028). Read-only."""
+    from app.status import overall_status
+    items = PlaidItem.objects.filter(user=request.user).order_by('id')
+    # DRF's Response renders datetimes as ISO 8601.
+    return Response(overall_status(items))
 
-                if response['has_more'] == False:
-                    print('No more transactions to sync')
-                    break
-            except Exception as e:
-                print('Error in transaction sync:', str(e))
-                error_response = json.loads(e.body)
-                if error_response.get('error_code') == 'TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION':
-                    print("trying again")
-                    time.sleep(5)
-                    continue
-                else:
-                    print('Error details:', error_response)
-                    break
-        
-    except Exception as e:
-        print('Error processing access token:', str(e))
-        print('Error details:', e.__class__.__name__)
-        traceback.print_exc()
-        return False
-    return True
 
-def update_transactions_and_accounts_for_user(user):
-    # get accounts associated to user
-    accounts = Account.objects.filter(user=user)
-    
-    # If no accounts exist yet, we'll return True since accounts were just created in exchange_public_token
-    # if len(accounts) == 0:
-    #     return True
-        
-    # get unique access tokens from accounts
-    access_tokens = set([acc.access_token for acc in accounts])
-    
-    success = True
-    # get transactions for each account and combine into json list
-    for access_token in access_tokens:
-        success = success and update_transactions_and_accounts_for_access_token(access_token)
+def sync_item(plaid_item, job, attempt):
+    """Sync one Item from Plaid, page by page. Called by the worker's run_job.
 
-    return success
+    Raises on any failure (plaid.ApiException for Plaid errors) so run_job can
+    record it. Saves attempt.step before each phase, so a failure shows where it
+    happened. Accumulates counts on the job object; run_job does the final save.
 
-def send_transaction_request(access_token):
-    try:
-        cursor = db.get_cursor(access_token=access_token)
-        request_params = {
-            'access_token': access_token,
-        }
-        if cursor is not None:
+    Each page's data is upserted as it arrives, but the cursor is saved only
+    after the last page (decision 016). Any failure therefore restarts from the
+    original cursor on retry, and replayed pages are absorbed by the upsert.
+    """
+    user = plaid_item.user
+    cursor = plaid_item.cursor
+    page = 1
+    while True:
+        # Heartbeat (decision 030): proves this worker is alive, and stops a worker
+        # that lost the job before it fetches or writes anything more.
+        renew_lease(job)
+        attempt.step = SyncJob.Step.FETCH_TRANSACTIONS
+        attempt.save(update_fields=['step'])
+        log_event(logger, "fetching_transactions", cursor=cursor, page=page, level=logging.DEBUG)
+
+        request_params = {'access_token': plaid_item.access_token}
+        if cursor:
             request_params['cursor'] = cursor
-            
-        request = TransactionsSyncRequest(**request_params)
-        response = client.transactions_sync(request)
-        response_dict = response.to_dict()
-        print("Raw Plaid response:", str(response_dict))
-        return response_dict
-    except plaid.ApiException as e:
-        error_response = json.loads(e.body)
-        print("Plaid API error:", str(error_response))
-        return error_response
+        response = client.transactions_sync(TransactionsSyncRequest(**request_params)).to_dict()
+
+        log_event(logger, "transactions_fetched", page=page, added=len(response['added']),
+                  modified=len(response['modified']), removed=len(response['removed']),
+                  has_more=response['has_more'])
+
+        cursor = response['next_cursor']
+
+        attempt.step = SyncJob.Step.UPDATE_DB
+        attempt.save(update_fields=['step'])
+
+        db.update_accounts(user, plaid_item, response['accounts'])
+        db.update_transactions(user, response)
+
+        job.added_count += len(response['added'])
+        job.modified_count += len(response['modified'])
+        job.removed_count += len(response['removed'])
+
+        if not response['has_more']:
+            break
+        # Fault injection only (decision 029): widens the window to kill or pause a
+        # worker mid-job. Unset (0) in normal runs.
+        fault_delay = float(os.getenv('FAULT_PAGE_DELAY_SECONDS', '0'))
+        if fault_delay:
+            log_event(logger, "fault_delay", level=logging.WARNING, seconds=fault_delay)
+            time.sleep(fault_delay)
+        page += 1
+    # Advance the cursor only after every page's writes succeeded (decision 016).
+    # Fenced (decision 030): a worker that lost its lease must not overwrite the
+    # cursor the new owner is about to save. renew_lease locks the job row until
+    # this transaction commits, so no reclaim can slip in between check and save.
+    with transaction.atomic():
+        renew_lease(job)
+        plaid_item.cursor = cursor
+        plaid_item.save(update_fields=['cursor'])
+    log_event(logger, "cursor_saved", pages=page)
     
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -493,7 +538,8 @@ def edit_transaction(request):
         if not transaction_id:
             return Response({'error': 'Transaction ID is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        transaction = Transaction.objects.filter(transaction_id=transaction_id).first()
+        # Scoped to the caller: another user's transaction is indistinguishable from a missing one.
+        transaction = Transaction.objects.filter(transaction_id=transaction_id, account__user=request.user).first()
         if not transaction:
             return Response({'error': 'Transaction not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -502,6 +548,8 @@ def edit_transaction(request):
         if new_amount:
             transaction.amount = new_amount
         if new_category:
+            if new_category != transaction.transaction_type:
+                transaction.transaction_type_is_custom = True
             transaction.transaction_type = new_category
 
         transaction.save()
@@ -528,7 +576,7 @@ def delete_transaction(request):
         if not transaction_id:
             return Response({'error': 'Transaction ID is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        transaction = Transaction.objects.filter(transaction_id=transaction_id).first()
+        transaction = Transaction.objects.filter(transaction_id=transaction_id, account__user=request.user).first()
         if not transaction:
             return Response({'error': 'Transaction not found'}, status=status.HTTP_404_NOT_FOUND)
 

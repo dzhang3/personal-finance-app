@@ -1,7 +1,14 @@
-import { useEffect, useState } from 'react';
-import { getTransactions, forceTransactionSync, editTransaction, deleteTransaction } from '@/services/apiService';
-import { 
-  List, 
+import { useEffect, useMemo, useState } from 'react';
+import { getTransactions, editTransaction, deleteTransaction, Transaction } from '@/services/apiService';
+import { formatCategory, formatCurrency, formatTransactionAmount, summarizeSpending } from '@/lib/finance';
+import { formatDateTime, getTimeFrameRange, isInTimeFrame, TimeFrame, timeFrameLabels, toDayKey } from '@/lib/dates';
+import { transactionsToCsv } from '@/lib/csv';
+import { filterTransactions } from '@/lib/transactionFilters';
+import { validateTransactionEdit } from '@/lib/transactionEdits';
+import BudgetPanel from '@/components/BudgetPanel';
+import {
+  Alert,
+  List,
   ListItem, 
   ListItemText, 
   Typography, 
@@ -26,115 +33,24 @@ import CloseIcon from '@mui/icons-material/Close';
 import FilterListIcon from '@mui/icons-material/FilterList';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
+import MoreVertIcon from '@mui/icons-material/MoreVert';
+import DownloadIcon from '@mui/icons-material/Download';
 
 
-interface Transaction {
-  transaction_id: string;
-  amount: number;
-  description: string;
-  merchant_name: string | null;
-  datetime: string;
-  transaction_type: string;
-  account: {
-    name: string;
-    account_type: string;
-    institution: string;
-  };
-}
-
-interface TransactionSummary {
-  expenses: number;
-  categories: Record<string, number>;
-}
+// Plaid personal_finance_category primaries, plus the backend's fallback.
+const PLAID_CATEGORIES = [
+  'BANK_FEES', 'ENTERTAINMENT', 'FOOD_AND_DRINK', 'GENERAL_MERCHANDISE', 'GENERAL_SERVICES',
+  'GOVERNMENT_AND_NON_PROFIT', 'HOME_IMPROVEMENT', 'INCOME', 'LOAN_PAYMENTS', 'MEDICAL',
+  'PERSONAL_CARE', 'RENT_AND_UTILITIES', 'TRANSFER_IN', 'TRANSFER_OUT', 'TRANSPORTATION',
+  'TRAVEL', 'UNCATEGORIZED',
+];
 
 interface TransactionListProps {
+  // Changes when a sync finishes; triggers a refetch.
+  reloadKey: number;
+  isSyncing: boolean;
   onAddAccount: () => void;
 }
-
-type TimeFrame = 'all' | 'week' | 'month' | 'prevMonth' | 'ytd' | 'year';
-
-const getTimeFrameStart = (timeFrame: TimeFrame): Date => {
-  const now = new Date();
-  switch (timeFrame) {
-    case 'week':
-      const weekStart = new Date(now);
-      weekStart.setDate(now.getDate() - now.getDay()); // Start of current week (Sunday)
-      return weekStart;
-    case 'month':
-      return new Date(now.getFullYear(), now.getMonth(), 1); // Start of current month
-    case 'prevMonth':
-      return new Date(now.getFullYear(), now.getMonth() - 1, 1); // Start of previous month
-    case 'ytd':
-      return new Date(now.getFullYear(), 0, 1); // Start of current year
-    case 'year':
-      const yearStart = new Date(now.getFullYear(), 0, 1); // Start of current year
-      yearStart.setFullYear(yearStart.getFullYear() - 1); // Go back one year
-      return yearStart;
-    default:
-      return new Date(0); // Beginning of time for 'all'
-  }
-};
-
-const getTimeFrameEnd = (timeFrame: TimeFrame): Date => {
-  const now = new Date();
-  if (timeFrame === 'prevMonth') {
-    return new Date(now.getFullYear(), now.getMonth(), 0); // End of previous month
-  }
-  return now;
-};
-
-const timeFrameLabels: Record<TimeFrame, string> = {
-  all: 'All Time',
-  week: 'This Week',
-  month: 'This Month',
-  prevMonth: 'Previous Month',
-  ytd: 'Year to Date',
-  year: 'Last 12 Months'
-};
-
-const formatDateTime = (isoString: string) => {
-  const date = new Date(isoString);
-  
-  // Format date
-  const dateOptions: Intl.DateTimeFormatOptions = {
-    weekday: 'short',
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  };
-  
-  // Check if the time is midnight (00:00:00) which likely means it's a date-only value
-  const isDateOnly = date.getUTCHours() === 0 && 
-                    date.getUTCMinutes() === 0 && 
-                    date.getUTCSeconds() === 0;
-  
-  // Only format time if it's not midnight
-  const time = !isDateOnly ? date.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-  }) : null;
-  
-  return {
-    date: date.toLocaleDateString('en-US', dateOptions),
-    time,
-  };
-};
-
-const calculateTransactionSummary = (transactions: Transaction[]): TransactionSummary => {
-  return transactions.reduce((summary, transaction) => {
-    // All transactions from backend are now expenses (positive amounts)
-    summary.expenses += transaction.amount;
-    // Add to category total
-    const categories: Record<string, number> = summary.categories;
-    categories[transaction.transaction_type] = (categories[transaction.transaction_type] || 0) + transaction.amount;
-    return summary;
-  }, { expenses: 0, categories: {} as Record<string, number> });
-};
-
-const formatCurrency = (amount: number): string => {
-  return `$${amount.toFixed(2)}`;
-};
 
 const COLORS = [
   '#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8', 
@@ -147,92 +63,94 @@ interface FilterState {
   maxAmount: string;
 }
 
-// Add this new component for the amount slider
-const AmountRangeSlider = ({ 
-  minAmount, 
-  maxAmount, 
+/**
+ * Local state only while the user drags or types; the parent's filters are the
+ * source of truth. The parent remounts this (via `key`) when filters or bounds
+ * change, which resets the local state to match.
+ */
+const AmountRangeSlider = ({
+  minAmount,
+  maxAmount,
   onChange,
-  maxPossibleAmount
-}: { 
-  minAmount: string; 
-  maxAmount: string; 
+  bounds: [lowest, highest]
+}: {
+  minAmount: string;
+  maxAmount: string;
   onChange: (min: string, max: string) => void;
-  maxPossibleAmount: number;
+  bounds: [number, number];
 }) => {
-  const [value, setValue] = useState<number[]>([
-    minAmount ? parseFloat(minAmount) : 0,
-    maxAmount ? parseFloat(maxAmount) : maxPossibleAmount
-  ]);
+  const initial = [
+    minAmount ? parseFloat(minAmount) : lowest,
+    maxAmount ? parseFloat(maxAmount) : highest
+  ];
+  const [value, setValue] = useState<number[]>(initial);
+  const [text, setText] = useState<string[]>(initial.map(String));
 
-  const handleChange = (_event: Event, newValue: number | number[]) => {
-    if (Array.isArray(newValue)) {
-      setValue(newValue);
-    }
+  const clamp = (n: number) => Math.min(highest, Math.max(lowest, n));
+
+  const commit = ([a, b]: number[]) => {
+    const [low, high] = a <= b ? [a, b] : [b, a];
+    setValue([low, high]);
+    setText([String(low), String(high)]);
+    // A handle at the edge of the range means "no limit", so new data outside it still shows.
+    onChange(low <= lowest ? '' : String(low), high >= highest ? '' : String(high));
   };
 
-  const handleChangeCommitted = (_event: React.SyntheticEvent | Event, newValue: number | number[]) => {
-    if (Array.isArray(newValue)) {
-      onChange(newValue[0].toString(), newValue[1].toString());
-    }
+  // Typed values are applied on blur or Enter, not per keystroke.
+  const commitText = () => {
+    const [a, b] = text.map(parseFloat);
+    commit([Number.isFinite(a) ? clamp(a) : value[0], Number.isFinite(b) ? clamp(b) : value[1]]);
+  };
+
+  const textFieldProps = {
+    size: 'small' as const,
+    onBlur: commitText,
+    onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter') commitText(); },
+    inputProps: { inputMode: 'decimal' as const },
+    InputProps: { startAdornment: <InputAdornment position="start">$</InputAdornment> },
+    sx: { width: '45%' },
   };
 
   return (
     <Box sx={{ width: '100%', px: 2 }}>
       <Slider
         value={value}
-        onChange={handleChange}
-        onChangeCommitted={handleChangeCommitted}
+        onChange={(_event, newValue) => {
+          if (Array.isArray(newValue)) {
+            setValue(newValue);
+            setText(newValue.map(String));
+          }
+        }}
+        onChangeCommitted={(_event, newValue) => {
+          if (Array.isArray(newValue)) commit(newValue);
+        }}
         valueLabelDisplay="auto"
-        min={0}
-        max={maxPossibleAmount}
-        valueLabelFormat={(value) => `$${value}`}
+        min={lowest}
+        max={highest}
+        valueLabelFormat={(v) => formatCurrency(v)}
       />
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 2 }}>
-        <TextField
-          size="small"
-          value={value[0]}
-          onChange={(e) => {
-            const newValue = e.target.value;
-            setValue([parseFloat(newValue) || 0, value[1]]);
-            onChange(newValue, value[1].toString());
-          }}
-          InputProps={{
-            startAdornment: <InputAdornment position="start">$</InputAdornment>,
-          }}
-          sx={{ width: '45%' }}
-        />
-        <TextField
-          size="small"
-          value={value[1]}
-          onChange={(e) => {
-            const newValue = e.target.value;
-            setValue([value[0], parseFloat(newValue) || maxPossibleAmount]);
-            onChange(value[0].toString(), newValue);
-          }}
-          InputProps={{
-            startAdornment: <InputAdornment position="start">$</InputAdornment>,
-          }}
-          sx={{ width: '45%' }}
-        />
+        <TextField {...textFieldProps} label="Min" value={text[0]} onChange={(e) => setText([e.target.value, text[1]])} />
+        <TextField {...textFieldProps} label="Max" value={text[1]} onChange={(e) => setText([text[0], e.target.value])} />
       </Box>
     </Box>
   );
 };
 
-export default function TransactionList({ onAddAccount }: TransactionListProps) {
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [timeFrame, setTimeFrame] = useState<TimeFrame>('month');
+export default function TransactionList({ reloadKey, isSyncing, onAddAccount }: TransactionListProps) {
+  // The only stored copy of the data; every list below is derived from it.
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [retryCount, setRetryCount] = useState(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [timeFrame, setTimeFrame] = useState<TimeFrame>('month');
+  const [search, setSearch] = useState('');
   const [filters, setFilters] = useState<FilterState>({
     category: '',
     minAmount: '',
     maxAmount: ''
   });
-  const [categories, setCategories] = useState<string[]>([]);
   const [isFilterDrawerOpen, setIsFilterDrawerOpen] = useState(false);
   const [activeTransactionId, setActiveTransactionId] = useState<string | null>(null);
 
@@ -244,88 +162,51 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
   const handleTransactionClick = (transactionId: string) => {
     setActiveTransactionId((prev) => (prev === transactionId ? null : transactionId));
   };
-  const maxAmount = Math.max(...transactions.map(t => t.amount));
-
-  const handleForceSync = async () => {
-    try {
-      setIsSyncing(true);
-      setError(null);
-      
-      forceTransactionSync();
-
-      // Refetch transactions after sync
-      const data = await getTransactions();
-      const sortedTransactions = data.sort((a: Transaction, b: Transaction) => 
-        new Date(b.datetime).getTime() - new Date(a.datetime).getTime()
-      );
-      setAllTransactions(sortedTransactions);
-    } catch (err) {
-      console.error('Failed to sync transactions:', err);
-      setError('Failed to sync transactions');
-    } finally {
-      setIsSyncing(false);
-    }
-  };
 
   useEffect(() => {
+    // Ignore a response that arrives after a newer fetch started or the component unmounted.
+    let cancelled = false;
     const fetchTransactions = async () => {
       try {
-        console.log('fetching transactions')
         const data = await getTransactions();
-        // Sort transactions by date in descending order (most recent first)
-        const sortedTransactions = data.sort((a: Transaction, b: Transaction) => 
+        if (cancelled) return;
+        // Most recent first
+        setAllTransactions([...data].sort((a, b) =>
           new Date(b.datetime).getTime() - new Date(a.datetime).getTime()
-        );
-        setAllTransactions(sortedTransactions);
-        setLoading(false);
+        ));
+        setLoadError(null);
       } catch (err) {
+        if (cancelled) return;
         console.error('Failed to fetch transactions:', err);
-        setError('Failed to fetch transactions');
-        setLoading(false);
+        setLoadError('Failed to load transactions.');
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     };
 
     fetchTransactions();
-  }, []);
+    return () => { cancelled = true; };
+  }, [reloadKey, retryCount]);
 
-  useEffect(() => {
-    const startDate = getTimeFrameStart(timeFrame);
-    const endDate = getTimeFrameEnd(timeFrame);
-    
-    const filteredTransactions = allTransactions.filter(transaction => {
-      const transactionDate = new Date(transaction.datetime);
-      return transactionDate >= startDate && transactionDate <= endDate;
-    });
-    
-    setTransactions(filteredTransactions);
+  const transactions = useMemo(() => {
+    const range = getTimeFrameRange(timeFrame);
+    return allTransactions.filter(transaction => isInTimeFrame(transaction.datetime, range));
   }, [timeFrame, allTransactions]);
 
-  useEffect(() => {
-    // Extract unique categories from transactions
-    const uniqueCategories = Array.from(new Set(
-      transactions.map(t => t.transaction_type)
-    )).sort();
-    setCategories(uniqueCategories);
+  const categories = useMemo(
+    () => Array.from(new Set(transactions.map(t => t.transaction_type))).sort(),
+    [transactions]
+  );
+
+  const filteredTransactions = useMemo(() => {
+    return filterTransactions(transactions, { ...filters, search });
+  }, [transactions, filters, search]);
+
+  // Slider range: whole dollars covering every amount in the time frame, always including 0.
+  const amountBounds = useMemo((): [number, number] => {
+    const amounts = transactions.map(t => t.amount);
+    return [Math.floor(Math.min(0, ...amounts)), Math.ceil(Math.max(0, ...amounts))];
   }, [transactions]);
-
-  useEffect(() => {
-    let filtered = [...transactions];
-
-    // Apply category filter
-    if (filters.category) {
-      filtered = filtered.filter(t => t.transaction_type === filters.category);
-    }
-
-    // Apply amount filters
-    const minAmount = filters.minAmount ? parseFloat(filters.minAmount) : 0;
-    const maxAmount = filters.maxAmount ? parseFloat(filters.maxAmount) : Infinity;
-
-    if (filters.minAmount || filters.maxAmount) {
-      filtered = filtered.filter(t => t.amount >= minAmount && t.amount <= maxAmount);
-    }
-
-    setFilteredTransactions(filtered);
-  }, [transactions, filters]);
 
   if (loading) {
     return (
@@ -335,17 +216,9 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
     );
   }
 
-  if (error) {
-    return (
-      <Typography color="error" align="center">
-        {error}
-      </Typography>
-    );
-  }
-
-  const summary = calculateTransactionSummary(filteredTransactions);
-  const pieData = Object.entries(summary.categories).map(([name, value]) => ({
-    name,
+  const summary = summarizeSpending(filteredTransactions);
+  const pieData = summary.categories.map(({ name, value }) => ({
+    name: formatCategory(name),
     value
   }));
 
@@ -362,42 +235,59 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
       minAmount: '',
       maxAmount: ''
     });
+    setSearch('');
   };
 
-  const activeFiltersCount = Object.values(filters).filter(Boolean).length;
+  const hasSearch = Boolean(search.trim());
+  const hasAmountFilter = Boolean(filters.minAmount || filters.maxAmount);
+  // The amount range counts as one filter.
+  const activeFiltersCount = (hasSearch ? 1 : 0) + (filters.category ? 1 : 0) + (hasAmountFilter ? 1 : 0);
 
-  
-  const handleEditTransaction = async (transaction: Transaction) => {
-    const transactionId = transaction.transaction_id;
-    console.log(`Editing transaction with ID: ${transactionId}`);
-    console.log(editValue, editAmount, editCategory);
-    // Implement the edit logic here (e.g., show a modal with editable fields)
-    await editTransaction(transactionId, editValue, editAmount, editCategory);
-    setFilteredTransactions((prevTransactions) => 
-      prevTransactions.map((t) => 
-        t.transaction_id === transactionId 
-          ? { ...t, merchant_name: editValue, amount: parseFloat(editAmount), transaction_type: editCategory }
-          : t
-      )
-    );
-    setEditingId(null);
-  };
-  
-  const handleDeleteTransaction = async (transactionId: string) => {
-    console.log(`Deleting transaction with ID: ${transactionId}`);
+  const handleEditTransaction = async (transactionId: string) => {
+    const edit = validateTransactionEdit(editValue, editAmount);
+    if (!edit.ok) {
+      setActionError(edit.error);
+      return;
+    }
     try {
-      const isConfirmed = window.confirm('Are you sure you want to delete this transaction?');
-      if (!isConfirmed) return;
-      // Call the delete API endpoint
-      await deleteTransaction(transactionId);
+      await editTransaction(transactionId, edit.name, String(edit.amount), editCategory);
+      setAllTransactions((prev) =>
+        prev.map((t) =>
+          t.transaction_id === transactionId
+            ? { ...t, merchant_name: edit.name, amount: edit.amount, transaction_type: editCategory }
+            : t
+        )
+      );
+      setEditingId(null);
+      setActionError(null);
+    } catch (err) {
+      console.error('Failed to edit transaction:', err);
+      setActionError(`Failed to save changes: ${err instanceof Error ? err.message : 'unknown error'}`);
+    }
+  };
 
-      // Update the transactions list after deletion
+  const handleExportCsv = () => {
+    const csv = transactionsToCsv(filteredTransactions);
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `transactions-${toDayKey(new Date())}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
+
+  const handleDeleteTransaction = async (transactionId: string) => {
+    if (!window.confirm('Are you sure you want to delete this transaction?')) return;
+    try {
+      await deleteTransaction(transactionId);
       setAllTransactions((prev) => prev.filter(t => t.transaction_id !== transactionId));
-      setTransactions((prev) => prev.filter(t => t.transaction_id !== transactionId));
-      setFilteredTransactions((prev) => prev.filter(t => t.transaction_id !== transactionId));
+      setActionError(null);
     } catch (err) {
       console.error('Failed to delete transaction:', err);
-      setError('Failed to delete transaction');
+      setActionError(`Failed to delete transaction: ${err instanceof Error ? err.message : 'unknown error'}`);
     }
   };
 
@@ -408,21 +298,33 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
     setEditCategory(transaction.transaction_type);
   };
 
+  // Plaid's primary categories, plus the transaction's current one in case it's custom.
+  const editCategoryOptions = Array.from(new Set([...PLAID_CATEGORIES, editCategory])).filter(Boolean);
+
   return (
     <Paper elevation={2} sx={{ maxWidth: 800, mx: 'auto', mt: 4, p: 2 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 2, mb: 3, flexWrap: 'wrap' }}>
         <Typography variant="h5">
           Recent Transactions
         </Typography>
-        <Box sx={{ display: 'flex', gap: 2 }}>
+        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
+          <TextField
+            size="small"
+            label="Search transactions"
+            placeholder="Merchant, description, account"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            inputProps={{ 'aria-label': 'Search transactions' }}
+            sx={{ minWidth: { xs: '100%', sm: 260 } }}
+          />
           <Button
             variant="outlined"
-            onClick={handleForceSync}
-            disabled={isSyncing}
-            startIcon={isSyncing ? <CircularProgress size={20} /> : null}
+            startIcon={<DownloadIcon />}
+            onClick={handleExportCsv}
+            disabled={filteredTransactions.length === 0}
             size="small"
           >
-            {isSyncing ? 'Syncing...' : 'Refresh Transactions'}
+            Export CSV
           </Button>
           <FormControl sx={{ minWidth: 150 }}>
             <InputLabel id="time-frame-label">Time Frame</InputLabel>
@@ -451,23 +353,46 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
         </Box>
       </Box>
 
+      {loadError && (
+        <Alert
+          severity="error"
+          sx={{ mb: 2 }}
+          action={
+            <Button color="inherit" size="small" onClick={() => setRetryCount(count => count + 1)}>
+              Retry
+            </Button>
+          }
+        >
+          {loadError}
+        </Alert>
+      )}
+      {actionError && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setActionError(null)}>
+          {actionError}
+        </Alert>
+      )}
+
       {/* Active Filters */}
       {activeFiltersCount > 0 && (
         <Stack direction="row" spacing={1} sx={{ mb: 3, flexWrap: 'wrap', gap: 1 }}>
+          {hasSearch && (
+            <Chip
+              label={`Search: ${search.trim()}`}
+              onDelete={() => setSearch('')}
+              size="small"
+            />
+          )}
           {filters.category && (
             <Chip 
-              label={`Category: ${filters.category}`}
+              label={`Category: ${formatCategory(filters.category)}`}
               onDelete={() => handleFilterChange('category', '')}
               size="small"
             />
           )}
-          {(filters.minAmount || filters.maxAmount) && (
-            <Chip 
-              label={`Amount: ${filters.minAmount ? `$${filters.minAmount}` : '$0'} - ${filters.maxAmount ? `$${filters.maxAmount}` : 'Any'}`}
-              onDelete={() => {
-                handleFilterChange('minAmount', '');
-                handleFilterChange('maxAmount', '');
-              }}
+          {hasAmountFilter && (
+            <Chip
+              label={`Amount: ${filters.minAmount ? formatCurrency(parseFloat(filters.minAmount)) : 'Any'} to ${filters.maxAmount ? formatCurrency(parseFloat(filters.maxAmount)) : 'Any'}`}
+              onDelete={() => setFilters(prev => ({ ...prev, minAmount: '', maxAmount: '' }))}
               size="small"
             />
           )}
@@ -498,21 +423,23 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
               <MenuItem value="">All Categories</MenuItem>
               {categories.map(category => (
                 <MenuItem key={category} value={category}>
-                  {category}
+                  {formatCategory(category)}
                 </MenuItem>
               ))}
             </Select>
           </FormControl>
 
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>Price Range</Typography>
+          <Typography variant="subtitle2">Amount Range</Typography>
+          <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mb: 1 }}>
+            Positive = money out; negative = refunds and income
+          </Typography>
           <AmountRangeSlider
+            // Remount when filters or bounds change elsewhere (Clear All, chip, time frame).
+            key={`${filters.minAmount}|${filters.maxAmount}|${amountBounds.join('|')}`}
             minAmount={filters.minAmount}
             maxAmount={filters.maxAmount}
-            onChange={(min, max) => {
-              handleFilterChange('minAmount', min);
-              handleFilterChange('maxAmount', max);
-            }}
-            maxPossibleAmount={maxAmount}
+            onChange={(min, max) => setFilters(prev => ({ ...prev, minAmount: min, maxAmount: max }))}
+            bounds={amountBounds}
           />
 
           <Box sx={{ mt: 3, display: 'flex', gap: 2 }}>
@@ -549,13 +476,18 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
       >
         <Box>
           <Typography variant="subtitle2" color="textSecondary">
-            Total Expenses {activeFiltersCount > 0 && '(Filtered)'}
+            Net Spending {activeFiltersCount > 0 && '(Filtered)'}
           </Typography>
           <Typography variant="h6" color="error.main">
-            {formatCurrency(summary.expenses)}
+            {formatCurrency(summary.total)}
+          </Typography>
+          <Typography variant="caption" color="textSecondary">
+            Refunds included; transfers, loan payments and income excluded
           </Typography>
         </Box>
       </Box>
+
+      <BudgetPanel transactions={allTransactions} />
 
       {/* Spending Categories Pie Chart */}
       {pieData.length > 0 && (
@@ -605,9 +537,22 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
       )}
 
       {filteredTransactions.length === 0 ? (
-        <Typography align="center" color="textSecondary" sx={{ my: 4 }}>
-          No transactions found
-        </Typography>
+        <Box sx={{ my: 4, textAlign: 'center' }}>
+          <Typography color="textSecondary">
+            {allTransactions.length === 0
+              ? isSyncing
+                ? 'Your transactions are syncing. They will appear here when the sync finishes.'
+                : 'No transactions yet. Link an account or sync to load transactions.'
+              : transactions.length === 0
+                ? 'No transactions in this time frame.'
+                : 'No transactions match your search and filters.'}
+          </Typography>
+          {transactions.length > 0 && filteredTransactions.length === 0 && activeFiltersCount > 0 && (
+            <Button onClick={clearFilters} sx={{ mt: 1 }}>
+              Clear search and filters
+            </Button>
+          )}
+        </Box>
       ) : (
         <List>
           {filteredTransactions.map((transaction) => {
@@ -616,11 +561,10 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
               <ListItem
                 key={transaction.transaction_id}
                 divider
-                onClick={() => handleTransactionClick(transaction.transaction_id)}
-                sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 2, cursor: 'pointer' }}
+                sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 2 }}
               >
                 {editingId === transaction.transaction_id ? (
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1, flexWrap: 'wrap' }}>
                     <TextField
                       value={editValue}
                       onChange={(e) => setEditValue(e.target.value)}
@@ -633,20 +577,34 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
                       onChange={(e) => setEditAmount(e.target.value)}
                       size="small"
                       label="Amount"
+                      helperText="Positive = money out"
+                      inputProps={{ inputMode: 'decimal' }}
+                      sx={{ width: 120 }}
                     />
                     <TextField
+                      select
                       value={editCategory}
                       onChange={(e) => setEditCategory(e.target.value)}
                       size="small"
                       label="Category"
-                    />
-                    <Button variant="contained" size="small" onClick={() => handleEditTransaction(transaction)}>
+                      sx={{ minWidth: 180 }}
+                    >
+                      {editCategoryOptions.map(category => (
+                        <MenuItem key={category} value={category}>
+                          {formatCategory(category)}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+                    <Button variant="contained" size="small" onClick={() => handleEditTransaction(transaction.transaction_id)}>
                       Save
+                    </Button>
+                    <Button size="small" onClick={() => setEditingId(null)}>
+                      Cancel
                     </Button>
                   </Box>
                 ) : (
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                    <Box>
+                  <Box sx={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto 112px', alignItems: 'center', gap: 1, width: '100%' }}>
+                    <Box sx={{ minWidth: 0 }}>
                       <ListItemText
                         primary={transaction.merchant_name || transaction.description}
                         secondary={
@@ -664,13 +622,13 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
                                 {time}
                               </Typography>
                             )}
-                            <Typography 
-                              variant="body2" 
-                              component="div" 
+                            <Typography
+                              variant="body2"
+                              component="span"
                               color="textSecondary"
-                              sx={{ mt: 0.5 }}
+                              sx={{ mt: 0.5, display: 'block' }}
                             >
-                              {transaction.account.institution !== 'Unknown' ? `${transaction.account.institution} • ` : ''}{transaction.account.name} • {transaction.transaction_type}
+                              {transaction.account.institution !== 'Unknown' ? `${transaction.account.institution} • ` : ''}{transaction.account.name} • {formatCategory(transaction.transaction_type)}
                             </Typography>
                           </Box>
                         }
@@ -678,21 +636,31 @@ export default function TransactionList({ onAddAccount }: TransactionListProps) 
                     </Box>
                     <Typography
                       variant="body1"
-                      color={transaction.amount > 0 ? 'error.main' : 'success.main'}
-                      sx={{ fontWeight: 'medium' }}
+                      style={{ color: transaction.amount > 0 ? '#d32f2f' : '#2e7d32' }}
+                      sx={{ fontWeight: 'medium', whiteSpace: 'nowrap', textAlign: 'right' }}
                     >
-                      {transaction.amount}
+                      {formatTransactionAmount(transaction.amount)}
                     </Typography>
-                    {activeTransactionId === transaction.transaction_id && (
-                      <Box sx={{ textAlign: 'right', minWidth: 80, display: 'flex', gap: 1 }}>
-                        <IconButton onClick={() => handleEditClick(transaction)} size="small">
+                    <Box sx={{ width: 112, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 0.5 }}>
+                      <IconButton
+                        onClick={() => handleTransactionClick(transaction.transaction_id)}
+                        size="small"
+                        aria-label={`Transaction actions for ${transaction.merchant_name || transaction.description}`}
+                        aria-expanded={activeTransactionId === transaction.transaction_id}
+                      >
+                        {activeTransactionId === transaction.transaction_id ? <CloseIcon /> : <MoreVertIcon />}
+                      </IconButton>
+                      {activeTransactionId === transaction.transaction_id && (
+                        <>
+                        <IconButton onClick={() => handleEditClick(transaction)} size="small" aria-label="Edit transaction">
                           <EditIcon />
                         </IconButton>
-                        <IconButton onClick={() => handleDeleteTransaction(transaction.transaction_id)} size="small">
+                        <IconButton onClick={() => handleDeleteTransaction(transaction.transaction_id)} size="small" aria-label="Delete transaction">
                           <DeleteIcon />
                         </IconButton>
-                      </Box>
-                    )}
+                        </>
+                      )}
+                    </Box>
                   </Box>
                 )}
               </ListItem>

@@ -79,13 +79,20 @@ WSGI_APPLICATION = 'server.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
+DATABASE_USER = os.environ['POSTGRES_USER']
+DATABASE_PASSWORD = os.environ['POSTGRES_PASSWORD']
+DATABASE_NAME = os.environ['POSTGRES_DB']
+
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": DATABASE_NAME,
+        "USER": DATABASE_USER,
+        "PASSWORD": DATABASE_PASSWORD,
+        "HOST": "db",
+        "PORT": "5432",
     }
 }
-
 
 # Password validation
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
@@ -111,7 +118,8 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'EST'
+# A real zone name, so daylight saving is handled. 'EST' is a fixed UTC-5 offset all year.
+TIME_ZONE = 'America/New_York'
 
 USE_I18N = True
 
@@ -124,6 +132,35 @@ USE_TZ = True
 STATIC_URL = 'static/'
 
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# Logging (decisions 023-025): logfmt lines to stdout, with job context attached.
+# Our code logs under 'app'; Django and libraries only show warnings and up.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'filters': {
+        'job_context': {'()': 'app.logging_utils.ContextFilter'},
+    },
+    'formatters': {
+        'logfmt': {'()': 'app.logging_utils.LogfmtFormatter'},
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'stream': 'ext://sys.stdout',
+            'filters': ['job_context'],
+            'formatter': 'logfmt',
+        },
+    },
+    'root': {'handlers': ['console'], 'level': 'WARNING'},
+    'loggers': {
+        'app': {
+            'handlers': ['console'],
+            'level': os.getenv('APP_LOG_LEVEL', 'INFO'),
+            'propagate': False,
+        },
+    },
+}
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
